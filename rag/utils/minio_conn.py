@@ -106,7 +106,6 @@ class RAGFlowMinio:
                 access_key=settings.MINIO["user"],
                 secret_key=settings.MINIO["password"],
                 secure=secure,
-                region=settings.MINIO.get("region", None) or None,
                 http_client=http_client,
             )
         except Exception:

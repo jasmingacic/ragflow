@@ -1,0 +1,89 @@
+name: ARC Runner Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 'Message to display'
+        required: false
+        default: 'hello there'
+  push:
+    branches:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test-arc-runner:
+    name: Test ARC Runner
+    runs-on: arc-runner-set
+    steps:
+      - name: Greeting
+        run: echo "${{ github.event.inputs.message || 'hello there' }}"
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Runner info
+        run: |
+          echo "Runner name: $RUNNER_NAME"
+          echo "Runner OS: $RUNNER_OS"
+          echo "Runner arch: $(uname -m)"
+          echo "Hostname: $(hostname)"
+          echo "Kernel: $(uname -r)"
+
+      - name: Verify tools
+        run: |
+          echo "--- Git ---"
+          git --version
+          echo "--- Python ---"
+          python3 --version || echo "Python3 not available"
+          echo "--- Docker ---"
+          docker --version || echo "Docker not available"
+          echo "--- Node ---"
+          node --version || echo "Node not available"
+
+      - name: Test workspace
+        run: |
+          echo "Workspace: $GITHUB_WORKSPACE"
+          ls -la
+          echo "Repository checked out successfully"
+
+  build-and-push:
+    name: Build & Push Image
+    runs-on: arc-runner-set
+    needs: test-arc-runner
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build frontend
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+          sudo apt-get install -y nodejs
+          cd web && npm install --maxsockets 5 --fetch-retries 5 --fetch-retry-mintimeout 20000 && npm run build
+
+      - name: Patch Dockerfile for build compatibility
+        run: |
+          sed -i 's#packages.microsoft.com/config/ubuntu/22.04#packages.microsoft.com/config/ubuntu/24.04#g' Dockerfile
+          sed -i 's#msodbcsql17#msodbcsql18#g' Dockerfile
+          sed -i 's#curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add -#curl -fsSL https://packages.microsoft.com/keys/microsoft.asc > /tmp/ms.asc \&\& gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg /tmp/ms.asc#g' Dockerfile
+          sed -i 's#{ echo "Failed to install ODBC driver"; exit 1; }#{ echo "ODBC driver install skipped"; }#g' Dockerfile
+          sed -i 's#--mount=type=cache,id=ragflow_npm,target=/root/.npm,sharing=locked ##g' Dockerfile
+          sed -i 's#--mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked ##g' Dockerfile
+          sed -i 's#--mount=type=cache,id=ragflow_uv,target=/root/.cache/uv,sharing=locked ##g' Dockerfile
+          sed -i 's#cd web && npm install && npm run build#echo "Frontend pre-built, skipping"#g' Dockerfile
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build image
+        run: docker build --no-cache -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
+
+      - name: Push image
+        run: docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}

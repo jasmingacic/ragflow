@@ -161,7 +161,7 @@ export interface ICodeForm {
   arguments: Record<string, string>;
   lang: string;
   script?: string;
-  outputs: Record<string, { value: unknown; type: string }>;
+  outputs: Record<string, { value: string; type: string }>;
 }
 
 export interface IAgentForm {
@@ -193,7 +193,7 @@ export interface IAgentForm {
   };
 }
 
-export type BaseNodeData<TForm = any> = {
+export type BaseNodeData<TForm extends any> = {
   label: string; // operator type
   name: string; // operator name
   color?: string;

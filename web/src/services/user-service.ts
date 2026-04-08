@@ -18,6 +18,7 @@ const {
   deleteLlm,
   enableLlm,
   deleteFactory,
+  getSystemStatus,
   getSystemVersion,
   getSystemTokenList,
   removeSystemToken,
@@ -82,6 +83,10 @@ const methods = {
   enableLlm: {
     url: enableLlm,
     method: 'post',
+  },
+  getSystemStatus: {
+    url: getSystemStatus,
+    method: 'get',
   },
   getSystemVersion: {
     url: getSystemVersion,

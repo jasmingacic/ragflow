@@ -47,7 +47,6 @@ const (
 	TokenPassword
 	TokenDataset
 	TokenDatasets
-	TokenDatasetTable
 	TokenOf
 	TokenAgents
 	TokenRole
@@ -73,7 +72,6 @@ const (
 	TokenKeys
 	TokenGenerate
 	TokenAvailable
-	TokenSupported
 	TokenModel
 	TokenModels
 	TokenProvider
@@ -81,7 +79,6 @@ const (
 	TokenDefault
 	TokenChats
 	TokenChat
-	TokenStream
 	TokenFiles
 	TokenAs
 	TokenParse
@@ -92,12 +89,12 @@ const (
 	TokenPipeline
 	TokenSearch
 	TokenCurrent
-	TokenVision
+	TokenLLM
+	TokenVLM
 	TokenEmbedding
-	TokenRerank
+	TokenReranker
 	TokenASR
 	TokenTTS
-	TokenOCR
 	TokenAsync
 	TokenSync
 	TokenBenchmark
@@ -106,49 +103,28 @@ const (
 	TokenTokens
 	TokenUnset
 	TokenIndex
-	TokenVector
-	TokenSize
+	TokenVectorSize
+	TokenDocMeta
 	TokenName // For ALTER PROVIDER <name> NAME <new_name>
-	TokenBalance
 	TokenInstance
 	TokenInstances
 	TokenDisable
 	TokenEnable
 	TokenUse
-	TokenCheck
 	TokenThink
-	TokenLS
-	TokenCat
 	TokenInsert
 	TokenFile
 	TokenMetadata
-	TokenTable
-	TokenUpdate
-	TokenRemove
-	TokenChunk
-	TokenChunks
-	TokenDocument
-	TokenTag
-	TokenLog
-	TokenLevel
-	TokenDebug
-	TokenInfo
-	TokenWarn
-	TokenError
-	TokenFatal
-	TokenPanic
+
 	// Literals
 	TokenIdentifier
 	TokenQuotedString
-	TokenInteger
-	TokenFloat
+	TokenNumber
 
 	// Special
 	TokenSemicolon
 	TokenComma
-	TokenSlash
 	TokenEOF
-	TokenDash
 	TokenIllegal
 )
 

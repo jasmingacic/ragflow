@@ -53,10 +53,10 @@ func (c *RAGFlowClient) LoginUserInteractive(username, password string) error {
 		return fmt.Errorf("server is down")
 	}
 
-	// Check response - admin returns JSON with message "pong", user returns plain "pong"
+	// Check response - admin returns JSON with message "PONG", user returns plain "pong"
 	resJSON, err := resp.JSON()
 	if err == nil {
-		// Admin mode returns {"code":0,"message":"pong"}
+		// Admin mode returns {"code":0,"message":"PONG"}
 		if msg, ok := resJSON["message"].(string); !ok || msg != "pong" {
 			fmt.Println("Server is down")
 			return fmt.Errorf("server is down")
@@ -73,7 +73,7 @@ func (c *RAGFlowClient) LoginUserInteractive(username, password string) error {
 	if password == "" {
 		fmt.Printf("password for %s: ", username)
 		var err error
-		password, err = ReadPassword()
+		password, err = readPassword()
 		if err != nil {
 			return fmt.Errorf("failed to read password: %w", err)
 		}
@@ -120,10 +120,10 @@ func (c *RAGFlowClient) LoginUser(cmd *Command) error {
 		return fmt.Errorf("server is down")
 	}
 
-	// Check response - admin returns JSON with message "pong", user returns plain "pong"
+	// Check response - admin returns JSON with message "PONG", user returns plain "pong"
 	resJSON, err := resp.JSON()
 	if err == nil {
-		// Admin mode returns {"code":0,"message":"pong"}
+		// Admin mode returns {"code":0,"message":"PONG"}
 		if msg, ok := resJSON["message"].(string); !ok || msg != "pong" {
 			fmt.Println("Server is down")
 			return fmt.Errorf("server is down")
@@ -145,7 +145,7 @@ func (c *RAGFlowClient) LoginUser(cmd *Command) error {
 	if !ok {
 		// Get password from user input (hidden)
 		fmt.Printf("password for %s: ", email)
-		password, err = ReadPassword()
+		password, err = readPassword()
 		if err != nil {
 			return fmt.Errorf("failed to read password: %w", err)
 		}
@@ -516,9 +516,9 @@ func (c *RAGFlowClient) ListDefaultModels(cmd *Command) (ResponseIf, error) {
 }
 
 // readPassword reads password from terminal without echoing
-func ReadPassword() (string, error) {
+func readPassword() (string, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return ReadPasswordFallback()
+		return readPasswordFallback()
 	}
 
 	fmt.Print("Password: ")
@@ -533,7 +533,7 @@ func ReadPassword() (string, error) {
 }
 
 // readPasswordFallback reads password as plain text (fallback mode)
-func ReadPasswordFallback() (string, error) {
+func readPasswordFallback() (string, error) {
 	fmt.Print("Password (will be visible): ")
 	reader := bufio.NewReader(os.Stdin)
 	password, err := reader.ReadString('\n')

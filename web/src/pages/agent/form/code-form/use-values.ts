@@ -1,8 +1,8 @@
-import { RAGFlowNodeType } from '@/interfaces/database/agent';
+import { ProgrammingLanguage } from '@/constants/agent';
+import { ICodeForm, RAGFlowNodeType } from '@/interfaces/database/agent';
 import { isEmpty } from 'lodash';
 import { useMemo } from 'react';
 import { initialCodeValues } from '../../constant';
-import { buildDefaultCodeOutput, deserializeCodeOutputContract } from './utils';
 
 function convertToArray(args: Record<string, string>) {
   return Object.entries(args).map(([key, value]) => ({
@@ -11,32 +11,36 @@ function convertToArray(args: Record<string, string>) {
   }));
 }
 
+type OutputsFormType = { name: string; type: string };
+
+function convertOutputsToArray({ lang, outputs = {} }: ICodeForm) {
+  if (lang === ProgrammingLanguage.Python) {
+    return Object.entries(outputs).map(([key, val]) => ({
+      name: key,
+      type: val.type,
+    }));
+  }
+  return Object.entries(outputs).reduce<OutputsFormType>((pre, [key, val]) => {
+    pre.name = key;
+    pre.type = val.type;
+    return pre;
+  }, {} as OutputsFormType);
+}
+
 export function useValues(node?: RAGFlowNodeType) {
-  const valueState = useMemo(() => {
+  const values = useMemo(() => {
     const formData = node?.data?.form;
 
     if (isEmpty(formData)) {
-      return {
-        values: {
-          ...initialCodeValues,
-          arguments: convertToArray(initialCodeValues.arguments),
-          output: buildDefaultCodeOutput(),
-        },
-        legacyOutputs: [],
-      };
+      return initialCodeValues;
     }
 
-    const { contract, legacyOutputs } = deserializeCodeOutputContract(formData);
-
     return {
-      values: {
-        ...formData,
-        arguments: convertToArray(formData.arguments),
-        output: contract ?? buildDefaultCodeOutput(),
-      },
-      legacyOutputs,
+      ...formData,
+      arguments: convertToArray(formData.arguments),
+      outputs: convertOutputsToArray(formData),
     };
   }, [node?.data?.form]);
 
-  return valueState;
+  return values;
 }

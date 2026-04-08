@@ -36,7 +36,6 @@ import React, {
 } from 'react';
 import * as ReactDOM from 'react-dom';
 
-import { resolvePromptVariableOption } from './utils';
 import { $createVariableNode } from './variable-node';
 
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -539,7 +538,7 @@ export default function VariablePickerMenuPlugin({
         return agentStructuredOutput;
       }
 
-      return resolvePromptVariableOption(value, children);
+      return children.find((x) => x.value === value);
     },
     [findAgentStructuredOutputLabel, options],
   );

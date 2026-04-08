@@ -1,0 +1,53 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: Sync with upstream
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/infiniflow/ragflow.git
+          git fetch upstream
+          git checkout main
+
+          if ! git merge upstream/main --no-edit; then
+            echo "Merge conflict detected, resolving by keeping our fork's changes for fork-specific files"
+
+            # For helm chart files, keep ours (fork maintains its own values)
+            git checkout --ours helm/values.yaml helm/Chart.yaml 2>/dev/null || true
+
+            # For deps, keep ours (fork uses PyPI/GitHub instead of Chinese mirrors)
+            git checkout --ours pyproject.toml uv.lock 2>/dev/null || true
+
+            # For workflows we added, keep ours
+            git checkout --ours .github/workflows/arc-runner-test.yml 2>/dev/null || true
+            git checkout --ours .github/workflows/release-build.yml 2>/dev/null || true
+            git checkout --ours .github/workflows/sync-upstream.yml 2>/dev/null || true
+
+            # Check if there are still unresolved conflicts
+            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            if [ -n "$CONFLICTS" ]; then
+              echo "::error::Unresolved merge conflicts in: $CONFLICTS"
+              git merge --abort
+              exit 1
+            fi
+
+            git add -A
+            git commit -m "Merge upstream/main with conflict resolution"
+          fi
+
+          git push origin main

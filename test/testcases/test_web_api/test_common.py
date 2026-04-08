@@ -36,7 +36,6 @@ MEMORY_API_URL = f"/api/{VERSION}/memories"
 MESSAGE_API_URL = f"/api/{VERSION}/messages"
 API_APP_URL = f"/{VERSION}/api"
 SYSTEM_APP_URL = f"/{VERSION}/system"
-SYSTEM_API_URL = f"/api/{VERSION}/system"
 LLM_APP_URL = f"/{VERSION}/llm"
 PLUGIN_APP_URL = f"/api/{VERSION}/plugin"
 SEARCHES_URL = f"/api/{VERSION}/searches"
@@ -76,17 +75,17 @@ def api_stats(auth, params=None, *, headers=HEADERS):
 
 # SYSTEM APP
 def system_new_token(auth, payload=None, *, headers=HEADERS, data=None):
-    res = requests.post(url=f"{HOST_ADDRESS}{SYSTEM_API_URL}/tokens", headers=headers, auth=auth, json=payload, data=data)
+    res = requests.post(url=f"{HOST_ADDRESS}{SYSTEM_APP_URL}/new_token", headers=headers, auth=auth, json=payload, data=data)
     return res.json()
 
 
 def system_token_list(auth, params=None, *, headers=HEADERS):
-    res = requests.get(url=f"{HOST_ADDRESS}{SYSTEM_API_URL}/tokens", headers=headers, auth=auth, params=params)
+    res = requests.get(url=f"{HOST_ADDRESS}{SYSTEM_APP_URL}/token_list", headers=headers, auth=auth, params=params)
     return res.json()
 
 
 def system_delete_token(auth, token, *, headers=HEADERS):
-    res = requests.delete(url=f"{HOST_ADDRESS}{SYSTEM_API_URL}/tokens/{token}", headers=headers, auth=auth)
+    res = requests.delete(url=f"{HOST_ADDRESS}{SYSTEM_APP_URL}/token/{token}", headers=headers, auth=auth)
     return res.json()
 
 
@@ -96,7 +95,7 @@ def system_status(auth, params=None, *, headers=HEADERS):
 
 
 def system_version(auth, params=None, *, headers=HEADERS):
-    res = requests.get(url=f"{HOST_ADDRESS}{SYSTEM_API_URL}/version", headers=headers, auth=auth, params=params)
+    res = requests.get(url=f"{HOST_ADDRESS}{SYSTEM_APP_URL}/version", headers=headers, auth=auth, params=params)
     return res.json()
 
 
