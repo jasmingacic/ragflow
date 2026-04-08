@@ -7,7 +7,7 @@ import {
   CarouselPrevious,
 } from '@/components/ui/carousel';
 import { IReferenceChunk } from '@/interfaces/database/chat';
-import { webAPI } from '@/utils/api';
+import { api_host } from '@/utils/api';
 import { isPlainObject } from 'lodash';
 import { RotateCw, ZoomIn, ZoomOut } from 'lucide-react';
 import { useMemo } from 'react';
@@ -79,7 +79,7 @@ function ImageCarousel({ images }: { images: ImageItem[] }) {
               @2xl:basis-1/6
               "
             >
-              <PhotoView src={`${webAPI}/document/image/${id}`}>
+              <PhotoView src={`${api_host}/document/image/${id}`}>
                 <Image
                   id={id}
                   className="h-40 w-full"

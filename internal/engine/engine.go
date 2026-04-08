@@ -30,34 +30,36 @@ const (
 	EngineInfinity      EngineType = "infinity"
 )
 
+// SearchRequest is an alias for types.SearchRequest
+type SearchRequest = types.SearchRequest
+
+// SearchResponse is an alias for types.SearchResponse
+type SearchResponse = types.SearchResponse
+
 // DocEngine document storage engine interface
 type DocEngine interface {
 	// Search
-	Search(ctx context.Context, req *types.SearchRequest) (*types.SearchResult, error)
+	Search(ctx context.Context, req interface{}) (interface{}, error)
 
-	// Dataset operations
-	CreateDataset(ctx context.Context, indexName, datasetID string, vectorSize int, parserID string) error
+	// Index operations
+	CreateIndex(ctx context.Context, indexName, datasetID string, vectorSize int, parserID string) error
+	DeleteIndex(ctx context.Context, indexName string) error
+	IndexExists(ctx context.Context, indexName string) (bool, error)
+
+	// Insert operations
 	InsertDataset(ctx context.Context, documents []map[string]interface{}, indexName string, knowledgebaseID string) ([]string, error)
-	UpdateDataset(ctx context.Context, condition map[string]interface{}, newValue map[string]interface{}, tableNamePrefix string, knowledgebaseID string) error
+	InsertMetadata(ctx context.Context, documents []map[string]interface{}, tenantID string) ([]string, error)
+
+	// Document operations
+	IndexDocument(ctx context.Context, indexName, docID string, doc interface{}) error
+	BulkIndex(ctx context.Context, indexName string, docs []interface{}) (interface{}, error)
+	DeleteDocument(ctx context.Context, indexName, docID string) error
 
 	// Chunk operations
 	GetChunk(ctx context.Context, indexName, chunkID string, kbIDs []string) (interface{}, error)
 
-	// Document metadata operations
-	CreateMetadata(ctx context.Context, indexName string) error
-	InsertMetadata(ctx context.Context, documents []map[string]interface{}, tenantID string) ([]string, error)
-	UpdateMetadata(ctx context.Context, docID string, kbID string, metaFields map[string]interface{}, tenantID string) error
-
-	// Operations for both dataset and metadata tables
-	Delete(ctx context.Context, condition map[string]interface{}, indexName string, datasetID string) (int64, error)
-	DropTable(ctx context.Context, indexName string) error
-	TableExists(ctx context.Context, indexName string) (bool, error)
-
-	// Utility functions for search result processing
-	GetFields(chunks []map[string]interface{}, fields []string) map[string]map[string]interface{}
-	GetAggregation(chunks []map[string]interface{}, fieldName string) []map[string]interface{}
-	GetHighlight(chunks []map[string]interface{}, keywords []string, fieldName string) map[string]string
-	GetDocIDs(chunks []map[string]interface{}) []string
+	// Doc metadata index operations (per-tenant)
+	CreateDocMetaIndex(ctx context.Context, indexName string) error
 
 	// Health check
 	Ping(ctx context.Context) error

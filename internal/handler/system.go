@@ -48,7 +48,7 @@ func (h *SystemHandler) Ping(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
 }
 
-// Health check
+// Health health check
 func (h *SystemHandler) Health(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"status": "ok",

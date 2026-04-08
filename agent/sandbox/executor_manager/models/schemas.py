@@ -14,7 +14,7 @@
 #  limitations under the License.
 #
 import base64
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -26,12 +26,6 @@ class ArtifactItem(BaseModel):
     mime_type: str
     size: int
     content_b64: str
-
-
-class ExecutionStructuredResult(BaseModel):
-    present: bool
-    value: Any = None
-    type: str = "json"
 
 
 class CodeExecutionResult(BaseModel):
@@ -52,9 +46,6 @@ class CodeExecutionResult(BaseModel):
 
     # File artifacts produced by code execution (images, PDFs, CSVs, etc.)
     artifacts: list[ArtifactItem] = []
-
-    # Structured return value produced by main()
-    result: Optional[ExecutionStructuredResult] = None
 
 
 class CodeExecutionRequest(BaseModel):

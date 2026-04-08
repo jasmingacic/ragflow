@@ -45,7 +45,7 @@ dependencies = [
     "google-cloud-storage>=2.19.0,<3.0.0",
     "google-genai>=1.41.0,<2.0.0",
     "google-search-results==2.4.2",
-    "graspologic @ git+https://gitee.com/infiniflow/graspologic.git@38e680cab72bc9fb68a7992c3bcc2d53b24e42fd",
+    "graspologic @ git+https://github.com/infiniflow/graspologic.git@38e680cab72bc9fb68a7992c3bcc2d53b24e42fd",
     "groq==0.9.0",
     "grpcio-status==1.67.1",
     "html-text==0.6.2",
@@ -75,7 +75,7 @@ dependencies = [
     "opensearch-py==2.7.1",
     "ormsgpack==1.5.0",
     "pdfplumber==0.10.4",
-    "pluginlib==0.10.0",
+    "pluginlib==0.9.4",
     "psycopg2-binary>=2.9.11,<3.0.0",
     "pyclipper>=1.4.0,<2.0.0",
     # "pywencai>=0.13.1,<1.0.0",  # Temporarily disabled: conflicts with agentrun-sdk (pydash>=8), needed for agent/tools/wencai.py
@@ -176,7 +176,6 @@ test = [
     "pycryptodomex==3.20.0",
     "pytest-playwright>=0.7.2",
     "codecov>=2.1.13",
-    "tensorflow-cpu>=2.17.0",
 ]
 
 [tool.uv]
@@ -187,7 +186,7 @@ constraint-dependencies = [
 ]
 
 [[tool.uv.index]]
-url = "https://mirrors.aliyun.com/pypi/simple"
+url = "https://pypi.org/simple"
 
 [tool.setuptools]
 packages = [

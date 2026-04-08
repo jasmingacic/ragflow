@@ -30,7 +30,7 @@ type CommonResponse struct {
 	Data         []map[string]interface{} `json:"data"`
 	Message      string                   `json:"message"`
 	Duration     float64
-	OutputFormat OutputFormat
+	outputFormat OutputFormat
 }
 
 func (r *CommonResponse) Type() string {
@@ -42,12 +42,12 @@ func (r *CommonResponse) TimeCost() float64 {
 }
 
 func (r *CommonResponse) SetOutputFormat(format OutputFormat) {
-	r.OutputFormat = format
+	r.outputFormat = format
 }
 
 func (r *CommonResponse) PrintOut() {
 	if r.Code == 0 {
-		PrintTableSimpleByFormat(r.Data, r.OutputFormat)
+		PrintTableSimpleByFormat(r.Data, r.outputFormat)
 	} else {
 		fmt.Println("ERROR")
 		fmt.Printf("%d, %s\n", r.Code, r.Message)
@@ -59,7 +59,7 @@ type CommonDataResponse struct {
 	Data         map[string]interface{} `json:"data"`
 	Message      string                 `json:"message"`
 	Duration     float64
-	OutputFormat OutputFormat
+	outputFormat OutputFormat
 }
 
 func (r *CommonDataResponse) Type() string {
@@ -71,14 +71,14 @@ func (r *CommonDataResponse) TimeCost() float64 {
 }
 
 func (r *CommonDataResponse) SetOutputFormat(format OutputFormat) {
-	r.OutputFormat = format
+	r.outputFormat = format
 }
 
 func (r *CommonDataResponse) PrintOut() {
 	if r.Code == 0 {
 		table := make([]map[string]interface{}, 0)
 		table = append(table, r.Data)
-		PrintTableSimpleByFormat(table, r.OutputFormat)
+		PrintTableSimpleByFormat(table, r.outputFormat)
 	} else {
 		fmt.Println("ERROR")
 		fmt.Printf("%d, %s\n", r.Code, r.Message)
@@ -89,7 +89,7 @@ type SimpleResponse struct {
 	Code         int    `json:"code"`
 	Message      string `json:"message"`
 	Duration     float64
-	OutputFormat OutputFormat
+	outputFormat OutputFormat
 }
 
 func (r *SimpleResponse) Type() string {
@@ -101,7 +101,7 @@ func (r *SimpleResponse) TimeCost() float64 {
 }
 
 func (r *SimpleResponse) SetOutputFormat(format OutputFormat) {
-	r.OutputFormat = format
+	r.outputFormat = format
 }
 
 func (r *SimpleResponse) PrintOut() {
@@ -113,34 +113,28 @@ func (r *SimpleResponse) PrintOut() {
 	}
 }
 
-type NonStreamResponse struct {
-	Code             int    `json:"code"`
-	ReasoningContent string `json:"reasoning_content"`
-	Answer           string `json:"answer"`
-	Message          string `json:"message"`
-	Duration         float64
-	OutputFormat     OutputFormat
+type MessageResponse struct {
+	Code         int    `json:"code"`
+	Message      string `json:"message"`
+	Duration     float64
+	outputFormat OutputFormat
 }
 
-func (r *NonStreamResponse) Type() string {
-	return "non_stream_message"
+func (r *MessageResponse) Type() string {
+	return "message"
 }
 
-func (r *NonStreamResponse) TimeCost() float64 {
+func (r *MessageResponse) TimeCost() float64 {
 	return r.Duration
 }
 
-func (r *NonStreamResponse) SetOutputFormat(format OutputFormat) {
-	r.OutputFormat = format
+func (r *MessageResponse) SetOutputFormat(format OutputFormat) {
+	r.outputFormat = format
 }
 
-func (r *NonStreamResponse) PrintOut() {
+func (r *MessageResponse) PrintOut() {
 	if r.Code == 0 {
-		if r.ReasoningContent != "" {
-			fmt.Printf("Thinking: %s\n", r.ReasoningContent)
-		}
-		fmt.Printf("Answer: %s\n", r.Answer)
-		fmt.Printf("Time: %f\n", r.Duration)
+		fmt.Println(r.Message)
 	} else {
 		fmt.Println("ERROR")
 		fmt.Printf("%d, %s\n", r.Code, r.Message)
@@ -151,7 +145,7 @@ type StreamMessageResponse struct {
 	Code         int    `json:"code"`
 	Message      string `json:"message"`
 	Duration     float64
-	OutputFormat OutputFormat
+	outputFormat OutputFormat
 }
 
 func (r *StreamMessageResponse) Type() string {
@@ -163,13 +157,11 @@ func (r *StreamMessageResponse) TimeCost() float64 {
 }
 
 func (r *StreamMessageResponse) SetOutputFormat(format OutputFormat) {
-	r.OutputFormat = format
+	r.outputFormat = format
 }
 
 func (r *StreamMessageResponse) PrintOut() {
-	if r.Code == 0 {
-		fmt.Printf("Time: %f\n", r.Duration)
-	} else {
+	if r.Code != 0 {
 		fmt.Println("ERROR")
 		fmt.Printf("%d, %s\n", r.Code, r.Message)
 	}
@@ -179,7 +171,7 @@ type RegisterResponse struct {
 	Code         int    `json:"code"`
 	Message      string `json:"message"`
 	Duration     float64
-	OutputFormat OutputFormat
+	outputFormat OutputFormat
 }
 
 func (r *RegisterResponse) Type() string {
@@ -191,7 +183,7 @@ func (r *RegisterResponse) TimeCost() float64 {
 }
 
 func (r *RegisterResponse) SetOutputFormat(format OutputFormat) {
-	r.OutputFormat = format
+	r.outputFormat = format
 }
 
 func (r *RegisterResponse) PrintOut() {
@@ -209,7 +201,7 @@ type BenchmarkResponse struct {
 	SuccessCount int     `json:"success_count"`
 	FailureCount int     `json:"failure_count"`
 	Concurrency  int
-	OutputFormat OutputFormat
+	outputFormat OutputFormat
 }
 
 func (r *BenchmarkResponse) Type() string {
@@ -217,7 +209,7 @@ func (r *BenchmarkResponse) Type() string {
 }
 
 func (r *BenchmarkResponse) SetOutputFormat(format OutputFormat) {
-	r.OutputFormat = format
+	r.outputFormat = format
 }
 
 func (r *BenchmarkResponse) PrintOut() {
@@ -247,7 +239,7 @@ type KeyValueResponse struct {
 	Key          string `json:"key"`
 	Value        string `json:"data"`
 	Duration     float64
-	OutputFormat OutputFormat
+	outputFormat OutputFormat
 }
 
 func (r *KeyValueResponse) Type() string {
@@ -259,7 +251,7 @@ func (r *KeyValueResponse) TimeCost() float64 {
 }
 
 func (r *KeyValueResponse) SetOutputFormat(format OutputFormat) {
-	r.OutputFormat = format
+	r.outputFormat = format
 }
 
 func (r *KeyValueResponse) PrintOut() {
@@ -270,7 +262,7 @@ func (r *KeyValueResponse) PrintOut() {
 			"key":   r.Key,
 			"value": r.Value,
 		})
-		PrintTableSimpleByFormat(table, r.OutputFormat)
+		PrintTableSimpleByFormat(table, r.outputFormat)
 	} else {
 		fmt.Println("ERROR")
 		fmt.Printf("%d\n", r.Code)
@@ -279,44 +271,44 @@ func (r *KeyValueResponse) PrintOut() {
 
 // ==================== ContextEngine Commands ====================
 
-// ContextListResponse represents the response for ls command
-type ContextListResponse struct {
+// CEListResponse represents the response for ls command
+type CEListResponse struct {
 	Code         int                      `json:"code"`
 	Data         []map[string]interface{} `json:"data"`
 	Message      string                   `json:"message"`
 	Duration     float64
-	OutputFormat OutputFormat
+	outputFormat OutputFormat
 }
 
-func (r *ContextListResponse) Type() string                        { return "ce_ls" }
-func (r *ContextListResponse) TimeCost() float64                   { return r.Duration }
-func (r *ContextListResponse) SetOutputFormat(format OutputFormat) { r.OutputFormat = format }
-func (r *ContextListResponse) PrintOut() {
+func (r *CEListResponse) Type() string                        { return "ce_ls" }
+func (r *CEListResponse) TimeCost() float64                   { return r.Duration }
+func (r *CEListResponse) SetOutputFormat(format OutputFormat) { r.outputFormat = format }
+func (r *CEListResponse) PrintOut() {
 	if r.Code == 0 {
-		PrintTableSimpleByFormat(r.Data, r.OutputFormat)
+		PrintTableSimpleByFormat(r.Data, r.outputFormat)
 	} else {
 		fmt.Println("ERROR")
 		fmt.Printf("%d, %s\n", r.Code, r.Message)
 	}
 }
 
-// ContextSearchResponse represents the response for search command
-type ContextSearchResponse struct {
+// CESearchResponse represents the response for search command
+type CESearchResponse struct {
 	Code         int                      `json:"code"`
 	Data         []map[string]interface{} `json:"data"`
 	Total        int                      `json:"total"`
 	Message      string                   `json:"message"`
 	Duration     float64
-	OutputFormat OutputFormat
+	outputFormat OutputFormat
 }
 
-func (r *ContextSearchResponse) Type() string                        { return "ce_search" }
-func (r *ContextSearchResponse) TimeCost() float64                   { return r.Duration }
-func (r *ContextSearchResponse) SetOutputFormat(format OutputFormat) { r.OutputFormat = format }
-func (r *ContextSearchResponse) PrintOut() {
+func (r *CESearchResponse) Type() string                        { return "ce_search" }
+func (r *CESearchResponse) TimeCost() float64                   { return r.Duration }
+func (r *CESearchResponse) SetOutputFormat(format OutputFormat) { r.outputFormat = format }
+func (r *CESearchResponse) PrintOut() {
 	if r.Code == 0 {
 		fmt.Printf("Found %d results:\n", r.Total)
-		PrintTableSimpleByFormat(r.Data, r.OutputFormat)
+		PrintTableSimpleByFormat(r.Data, r.outputFormat)
 	} else {
 		fmt.Println("ERROR")
 		fmt.Printf("%d, %s\n", r.Code, r.Message)
