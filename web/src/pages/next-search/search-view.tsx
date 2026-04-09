@@ -24,8 +24,8 @@ import ExpandableContent from './expandable-content';
 import { ISearchReturnProps } from './hooks';
 import './index.less';
 import MarkdownContent from './markdown-content';
-import MindMapSheet from './mindmap-sheet';
-import { RAGFlowLogo } from './ragflow-logo';
+import MindMapDrawer from './mindmap-drawer';
+import { RAGFlowLogo } from './ragflow-log';
 import RetrievalDocuments from './retrieval-documents';
 
 export default function SearchingView({
@@ -57,21 +57,18 @@ export default function SearchingView({
   handleSearch,
   pagination,
   onChange,
-  showEmbedLogo,
 }: ISearchReturnProps & {
   setIsSearching?: Dispatch<SetStateAction<boolean>>;
   searchData: ISearchAppDetailProps;
-  showEmbedLogo?: boolean;
 }) {
   const { t } = useTranslation();
 
-  const [searchText, setSearchText] = useState<string>('');
+  const [searchtext, setSearchtext] = useState<string>('');
   const [retrievalLoading, setRetrievalLoading] = useState(false);
 
   useEffect(() => {
-    setSearchText(searchStr);
-  }, [searchStr, setSearchText]);
-
+    setSearchtext(searchStr);
+  }, [searchStr, setSearchtext]);
   return (
     <section
       className={cn(
@@ -88,11 +85,10 @@ export default function SearchingView({
           onClick={() => {
             setIsSearching?.(false);
           }}
-          showEmbedIcon={showEmbedLogo}
         ></RAGFlowLogo>
         <div
           className={cn(
-            ' rounded-lg text-primary text-xl sticky flex flex-col justify-center  transform scale-100 ml-16 h-full flex-1 3xl:w-2/3 3xl:flex-none',
+            ' rounded-lg text-primary text-xl sticky flex flex-col justify-center w-2/3 transform scale-100 ml-16 h-full',
           )}
         >
           <div className={cn('flex flex-col justify-start items-start w-full')}>
@@ -102,14 +98,14 @@ export default function SearchingView({
                 className={cn(
                   'w-full rounded-full py-6 pl-4 !pr-[8rem] text-primary text-lg bg-bg-base',
                 )}
-                value={searchText}
+                value={searchtext}
                 onChange={(e) => {
-                  setSearchText(e.target.value);
+                  setSearchtext(e.target.value);
                 }}
                 disabled={sendingLoading}
                 onKeyUp={(e) => {
                   if (e.key === 'Enter') {
-                    handleSearch(searchText);
+                    handleSearch(searchtext);
                   }
                 }}
               />
@@ -118,7 +114,7 @@ export default function SearchingView({
                   className="text-text-secondary cursor-pointer opacity-80"
                   size={14}
                   onClick={() => {
-                    setSearchText('');
+                    setSearchtext('');
                     handleClickRelatedQuestion('');
                   }}
                 />
@@ -130,7 +126,7 @@ export default function SearchingView({
                     if (sendingLoading) {
                       stopOutputMessage();
                     } else {
-                      handleSearch(searchText);
+                      handleSearch(searchtext);
                     }
                   }}
                 >
@@ -277,40 +273,36 @@ export default function SearchingView({
               ></RAGFlowPagination>
             </div>
           )}
-
-          {!mindMapVisible &&
-            !isFirstRender &&
-            !isSearchStrEmpty &&
-            !isEmpty(searchData.search_config.kb_ids) &&
-            searchData.search_config.query_mindmap && (
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    onClick={showMindMapModal}
-                    variant={'outline'}
-                    className="absolute top-16 translate-y-2 right-10 z-30 rounded-full size-6"
-                  >
-                    <ListTree />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-fit">
-                  {t('chunk.mind')}
-                </PopoverContent>
-              </Popover>
-            )}
         </div>
         {mindMapVisible && (
           <div className="flex-1 h-[88dvh] z-30 ml-32 mt-5">
-            <MindMapSheet
+            <MindMapDrawer
               visible={mindMapVisible}
               hideModal={hideMindMapModal}
               data={mindMap}
               loading={mindMapLoading}
-            ></MindMapSheet>
+            ></MindMapDrawer>
           </div>
         )}
       </div>
-
+      {!mindMapVisible &&
+        !isFirstRender &&
+        !isSearchStrEmpty &&
+        !isEmpty(searchData.search_config.kb_ids) &&
+        searchData.search_config.query_mindmap && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                onClick={showMindMapModal}
+                variant={'outline'}
+                className="absolute top-28 right-3 z-30 rounded-full size-6"
+              >
+                <ListTree />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-fit">{t('chunk.mind')}</PopoverContent>
+          </Popover>
+        )}
       {visible && (
         <PdfDrawer
           visible={visible}
