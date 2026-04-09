@@ -69,11 +69,11 @@ func (c *RAGFlowClient) ShowServerVersion(cmd *Command) (ResponseIf, error) {
 
 	if iterations > 1 {
 		// Benchmark mode: multiple iterations
-		return c.HTTPClient.RequestWithIterations("GET", "/system/version", false, "web", nil, nil, iterations)
+		return c.HTTPClient.RequestWithIterations("GET", "/system/version", true, "web", nil, nil, iterations)
 	}
 
 	// Single mode
-	resp, err := c.HTTPClient.Request("GET", "/system/version", false, "web", nil, nil)
+	resp, err := c.HTTPClient.Request("GET", "/system/version", true, "web", nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to show version: %w", err)
 	}
@@ -390,13 +390,13 @@ func (c *RAGFlowClient) ListDatasets(cmd *Command) (ResponseIf, error) {
 
 // getDatasetID gets dataset ID by name
 func (c *RAGFlowClient) getDatasetID(datasetName string) (string, error) {
-	resp, err := c.HTTPClient.Request("POST", "/kb/list", false, "web", nil, nil)
+	resp, err := c.HTTPClient.Request("GET", "/datasets", true, "web", nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to list datasets: %w", err)
 	}
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("failed to list datasets: HTTP %d", resp.StatusCode)
+		return "", fmt.Errorf("failed to list datasets: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
 	}
 
 	resJSON, err := resp.JSON()
@@ -410,17 +410,12 @@ func (c *RAGFlowClient) getDatasetID(datasetName string) (string, error) {
 		return "", fmt.Errorf("failed to list datasets: %s", msg)
 	}
 
-	data, ok := resJSON["data"].(map[string]interface{})
+	data, ok := resJSON["data"].([]interface{})
 	if !ok {
 		return "", fmt.Errorf("invalid response format")
 	}
 
-	kbs, ok := data["kbs"].([]interface{})
-	if !ok {
-		return "", fmt.Errorf("invalid response format: kbs not found")
-	}
-
-	for _, kb := range kbs {
+	for _, kb := range data {
 		if kbMap, ok := kb.(map[string]interface{}); ok {
 			if name, _ := kbMap["name"].(string); name == datasetName {
 				if id, _ := kbMap["id"].(string); id != "" {
@@ -764,8 +759,8 @@ func (c *RAGFlowClient) UnsetToken(cmd *Command) (ResponseIf, error) {
 	return &result, nil
 }
 
-// CreateIndex creates an index for a dataset
-func (c *RAGFlowClient) CreateIndex(cmd *Command) (ResponseIf, error) {
+// CreateDataset creates a table for a dataset
+func (c *RAGFlowClient) CreateDataset(cmd *Command) (ResponseIf, error) {
 	if c.ServerType != "user" {
 		return nil, fmt.Errorf("this command is only allowed in USER mode")
 	}
@@ -791,13 +786,13 @@ func (c *RAGFlowClient) CreateIndex(cmd *Command) (ResponseIf, error) {
 		"vector_size": vectorSize,
 	}
 
-	resp, err := c.HTTPClient.Request("POST", "/kb/index", false, "web", nil, payload)
+	resp, err := c.HTTPClient.Request("POST", "/kb/doc_engine_table", false, "web", nil, payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create index: %w", err)
+		return nil, fmt.Errorf("failed to create table: %w", err)
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to create index: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
+		return nil, fmt.Errorf("failed to create table: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
 	}
 
 	resJSON, err := resp.JSON()
@@ -813,16 +808,73 @@ func (c *RAGFlowClient) CreateIndex(cmd *Command) (ResponseIf, error) {
 	var result SimpleResponse
 	result.Code = int(code)
 	if result.Code == 0 {
-		result.Message = fmt.Sprintf("Success to create index for dataset: %s", datasetName)
+		result.Message = fmt.Sprintf("Success to create table for dataset: %s", datasetName)
 	} else {
-		result.Message = fmt.Sprintf("Failed to create index: %v", resJSON)
+		result.Message = fmt.Sprintf("Failed to create table: %v", resJSON)
 	}
 	result.Duration = 0
 	return &result, nil
 }
 
-// DropIndex drops an index for a dataset
-func (c *RAGFlowClient) DropIndex(cmd *Command) (ResponseIf, error) {
+// CreateDatasetInDocEngine creates a table for a dataset in doc engine
+func (c *RAGFlowClient) CreateDatasetInDocEngine(cmd *Command) (ResponseIf, error) {
+	if c.ServerType != "user" {
+		return nil, fmt.Errorf("this command is only allowed in USER mode")
+	}
+
+	datasetName, ok := cmd.Params["dataset_name"].(string)
+	if !ok {
+		return nil, fmt.Errorf("dataset_name not provided")
+	}
+
+	vectorSize, ok := cmd.Params["vector_size"].(int)
+	if !ok {
+		return nil, fmt.Errorf("vector_size not provided")
+	}
+
+	// Get dataset ID by name
+	datasetID, err := c.getDatasetID(datasetName)
+	if err != nil {
+		return nil, err
+	}
+
+	payload := map[string]interface{}{
+		"kb_id":       datasetID,
+		"vector_size": vectorSize,
+	}
+
+	resp, err := c.HTTPClient.Request("POST", "/kb/doc_engine_table", false, "web", nil, payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create table: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("failed to create table: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
+	}
+
+	resJSON, err := resp.JSON()
+	if err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+
+	code, ok := resJSON["code"].(float64)
+	if !ok {
+		return nil, fmt.Errorf("invalid response format: code is not a number")
+	}
+
+	var result SimpleResponse
+	result.Code = int(code)
+	if result.Code == 0 {
+		result.Message = fmt.Sprintf("Success to create table for dataset: %s", datasetName)
+	} else {
+		result.Message = fmt.Sprintf("Failed to create table: %v", resJSON)
+	}
+	result.Duration = 0
+	return &result, nil
+}
+
+// DropDatasetInDocEngine drops a table for a dataset in doc engine
+func (c *RAGFlowClient) DropDatasetInDocEngine(cmd *Command) (ResponseIf, error) {
 	if c.ServerType != "user" {
 		return nil, fmt.Errorf("this command is only allowed in USER mode")
 	}
@@ -842,13 +894,13 @@ func (c *RAGFlowClient) DropIndex(cmd *Command) (ResponseIf, error) {
 		"kb_id": datasetID,
 	}
 
-	resp, err := c.HTTPClient.Request("DELETE", "/kb/index", false, "web", nil, payload)
+	resp, err := c.HTTPClient.Request("DELETE", "/kb/doc_engine_table", false, "web", nil, payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to drop index: %w", err)
+		return nil, fmt.Errorf("failed to drop dataset: %w", err)
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to drop index: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
+		return nil, fmt.Errorf("failed to drop dataset: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
 	}
 
 	resJSON, err := resp.JSON()
@@ -864,27 +916,27 @@ func (c *RAGFlowClient) DropIndex(cmd *Command) (ResponseIf, error) {
 	var result SimpleResponse
 	result.Code = int(code)
 	if result.Code == 0 {
-		result.Message = fmt.Sprintf("Success to drop index for dataset: %s", datasetName)
+		result.Message = fmt.Sprintf("Success to drop table for dataset: %s", datasetName)
 	} else {
-		result.Message = fmt.Sprintf("Failed to drop index: %v", resJSON)
+		result.Message = fmt.Sprintf("Failed to drop table for dataset: %s: %v", datasetName, resJSON)
 	}
 	result.Duration = 0
 	return &result, nil
 }
 
-// CreateDocMetaIndex creates the document metadata index for the tenant
-func (c *RAGFlowClient) CreateDocMetaIndex(cmd *Command) (ResponseIf, error) {
+// CreateMetadataInDocEngine creates the document metadata table for the tenant
+func (c *RAGFlowClient) CreateMetadataInDocEngine(cmd *Command) (ResponseIf, error) {
 	if c.ServerType != "user" {
 		return nil, fmt.Errorf("this command is only allowed in USER mode")
 	}
 
-	resp, err := c.HTTPClient.Request("POST", "/tenant/doc_meta_index", false, "web", nil, nil)
+	resp, err := c.HTTPClient.Request("POST", "/tenant/doc_engine_metadata_table", false, "web", nil, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create doc meta index: %w", err)
+		return nil, fmt.Errorf("failed to create metadata table: %w", err)
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to create doc meta index: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
+		return nil, fmt.Errorf("failed to create metadata table: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
 	}
 
 	resJSON, err := resp.JSON()
@@ -900,27 +952,27 @@ func (c *RAGFlowClient) CreateDocMetaIndex(cmd *Command) (ResponseIf, error) {
 	var result SimpleResponse
 	result.Code = int(code)
 	if result.Code == 0 {
-		result.Message = "Success to create doc meta index"
+		result.Message = "Success to create metadata table"
 	} else {
-		result.Message = fmt.Sprintf("Failed to create doc meta index: %v", resJSON)
+		result.Message = fmt.Sprintf("Failed to create metadata table: %v", resJSON)
 	}
 	result.Duration = 0
 	return &result, nil
 }
 
-// DropDocMetaIndex drops the document metadata index for the tenant
-func (c *RAGFlowClient) DropDocMetaIndex(cmd *Command) (ResponseIf, error) {
+// DropMetadataInDocEngine drops the document metadata table for the tenant
+func (c *RAGFlowClient) DropMetadataInDocEngine(cmd *Command) (ResponseIf, error) {
 	if c.ServerType != "user" {
 		return nil, fmt.Errorf("this command is only allowed in USER mode")
 	}
 
-	resp, err := c.HTTPClient.Request("DELETE", "/tenant/doc_meta_index", false, "web", nil, nil)
+	resp, err := c.HTTPClient.Request("DELETE", "/tenant/doc_engine_metadata_table", false, "web", nil, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to drop doc meta index: %w", err)
+		return nil, fmt.Errorf("failed to drop metadata table: %w", err)
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to drop doc meta index: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
+		return nil, fmt.Errorf("failed to drop metadata table: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
 	}
 
 	resJSON, err := resp.JSON()
@@ -936,9 +988,9 @@ func (c *RAGFlowClient) DropDocMetaIndex(cmd *Command) (ResponseIf, error) {
 	var result SimpleResponse
 	result.Code = int(code)
 	if result.Code == 0 {
-		result.Message = "Success to drop doc meta index"
+		result.Message = "Success to drop metadata table"
 	} else {
-		result.Message = fmt.Sprintf("Failed to drop doc meta index: %v", resJSON)
+		result.Message = fmt.Sprintf("Failed to drop metadata table: %v", resJSON)
 	}
 	result.Duration = 0
 	return &result, nil
@@ -1542,8 +1594,8 @@ func (c *RAGFlowClient) CEList(cmd *Command) (ResponseIf, error) {
 	}
 
 	// Convert to response
-	var response CEListResponse
-	response.outputFormat = c.OutputFormat
+	var response ContextListResponse
+	response.OutputFormat = c.OutputFormat
 	response.Code = 0
 	response.Data = ce.FormatNodes(result.Nodes, string(c.OutputFormat))
 
@@ -1581,8 +1633,8 @@ func (c *RAGFlowClient) CESearch(cmd *Command) (ResponseIf, error) {
 	}
 
 	// Convert to response
-	var response CESearchResponse
-	response.outputFormat = c.OutputFormat
+	var response ContextSearchResponse
+	response.OutputFormat = c.OutputFormat
 	response.Code = 0
 	response.Total = result.Total
 	response.Data = ce.FormatNodes(result.Nodes, string(c.OutputFormat))
@@ -1674,6 +1726,263 @@ func (c *RAGFlowClient) InsertMetadataFromFile(cmd *Command) (ResponseIf, error)
 		result.Message = fmt.Sprintf("Success to insert metadata from file: %s", filePath)
 	} else {
 		result.Message = fmt.Sprintf("Failed to insert metadata from file: %v", resJSON)
+	}
+	result.Duration = 0
+	return &result, nil
+}
+
+// UpdateChunk updates a chunk in a dataset
+func (c *RAGFlowClient) UpdateChunk(cmd *Command) (ResponseIf, error) {
+	if c.ServerType != "user" {
+		return nil, fmt.Errorf("this command is only allowed in USER mode")
+	}
+
+	chunkID, ok := cmd.Params["chunk_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("chunk_id not provided")
+	}
+
+	datasetName, ok := cmd.Params["dataset_name"].(string)
+	if !ok {
+		return nil, fmt.Errorf("dataset_name not provided")
+	}
+
+	jsonBody, ok := cmd.Params["json_body"].(string)
+	if !ok {
+		return nil, fmt.Errorf("json_body not provided")
+	}
+
+	// Look up dataset_id from dataset_name
+	datasetID, err := c.getDatasetID(datasetName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get dataset ID: %w", err)
+	}
+
+	// Try to get doc_id from the chunk retrieval endpoint
+	getResp, err := c.HTTPClient.Request("GET", "/chunk/get?chunk_id="+chunkID, false, "web", nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get chunk info: %w", err)
+	}
+
+	var docID string
+	if getResp.StatusCode == 200 {
+		getJSON, err := getResp.JSON()
+		if err == nil {
+			if data, ok := getJSON["data"].(map[string]interface{}); ok {
+				if d, ok := data["doc_id"].(string); ok {
+					docID = d
+				}
+			}
+		}
+	}
+
+	if docID == "" {
+		return nil, fmt.Errorf("could not find document_id for chunk %s. Please provide document_id explicitly", chunkID)
+	}
+
+	// Parse the JSON body
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
+		return nil, fmt.Errorf("invalid JSON body: %w", err)
+	}
+
+	// Add IDs to payload
+	payload["dataset_id"] = datasetID
+	payload["document_id"] = docID
+	payload["chunk_id"] = chunkID
+
+	resp, err := c.HTTPClient.Request("POST", "/chunk/update", false, "web", nil, payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update chunk: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("failed to update chunk: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
+	}
+
+	resJSON, err := resp.JSON()
+	if err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+
+	code, ok := resJSON["code"].(float64)
+	if !ok {
+		return nil, fmt.Errorf("invalid response format: code is not a number")
+	}
+
+	var result SimpleResponse
+	result.Code = int(code)
+	if result.Code == 0 {
+		result.Message = fmt.Sprintf("Success to update chunk: %s", chunkID)
+	} else {
+		result.Message = fmt.Sprintf("Failed to update chunk: %v", resJSON)
+	}
+	result.Duration = 0
+	return &result, nil
+}
+
+// SetMeta sets metadata for a document
+func (c *RAGFlowClient) SetMeta(cmd *Command) (ResponseIf, error) {
+	if c.ServerType != "user" {
+		return nil, fmt.Errorf("this command is only allowed in USER mode")
+	}
+
+	docID, ok := cmd.Params["doc_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("doc_id not provided")
+	}
+
+	metaJSON, ok := cmd.Params["meta"].(string)
+	if !ok {
+		return nil, fmt.Errorf("meta not provided")
+	}
+
+	payload := map[string]interface{}{
+		"doc_id": docID,
+		"meta":   metaJSON,
+	}
+
+	resp, err := c.HTTPClient.Request("POST", "/document/set_meta", false, "web", nil, payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set metadata: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("failed to set metadata: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
+	}
+
+	resJSON, err := resp.JSON()
+	if err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+
+	code, ok := resJSON["code"].(float64)
+	if !ok {
+		return nil, fmt.Errorf("invalid response format: code is not a number")
+	}
+
+	var result SimpleResponse
+	result.Code = int(code)
+	if result.Code == 0 {
+		result.Message = fmt.Sprintf("Success to set metadata for document: %s", docID)
+	} else {
+		result.Message = fmt.Sprintf("Failed to set metadata: %v", resJSON)
+	}
+	result.Duration = 0
+	return &result, nil
+}
+
+// RmTags removes tags from chunks in a dataset
+func (c *RAGFlowClient) RmTags(cmd *Command) (ResponseIf, error) {
+	if c.ServerType != "user" {
+		return nil, fmt.Errorf("this command is only allowed in USER mode")
+	}
+
+	datasetName, ok := cmd.Params["dataset_name"].(string)
+	if !ok {
+		return nil, fmt.Errorf("dataset_name not provided")
+	}
+
+	kbID, err := c.getDatasetID(datasetName)
+	if err != nil {
+		return nil, err
+	}
+
+	tags, ok := cmd.Params["tags"].([]string)
+	if !ok {
+		return nil, fmt.Errorf("tags not provided")
+	}
+
+	payload := map[string]interface{}{
+		"tags": tags,
+	}
+
+	resp, err := c.HTTPClient.Request("POST", "/kb/"+kbID+"/rm_tags", false, "web", nil, payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to remove tags: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("failed to remove tags: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
+	}
+
+	resJSON, err := resp.JSON()
+	if err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+
+	code, ok := resJSON["code"].(float64)
+	if !ok {
+		return nil, fmt.Errorf("invalid response format: code is not a number")
+	}
+
+	var result SimpleResponse
+	result.Code = int(code)
+	if result.Code == 0 {
+		result.Message = fmt.Sprintf("Success to remove tags from dataset: %s", kbID)
+	} else {
+		result.Message = fmt.Sprintf("Failed to remove tags: %v", resJSON)
+	}
+	result.Duration = 0
+	return &result, nil
+}
+
+// RemoveChunks removes chunks from a document
+func (c *RAGFlowClient) RemoveChunks(cmd *Command) (ResponseIf, error) {
+	if c.ServerType != "user" {
+		return nil, fmt.Errorf("this command is only allowed in USER mode")
+	}
+
+	docID, ok := cmd.Params["doc_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("doc_id not provided")
+	}
+
+	payload := map[string]interface{}{
+		"doc_id": docID,
+	}
+
+	// Check if delete_all is set
+	if deleteAll, ok := cmd.Params["delete_all"].(bool); ok && deleteAll {
+		payload["delete_all"] = true
+	} else if chunkIDs, ok := cmd.Params["chunk_ids"].([]string); ok {
+		payload["chunk_ids"] = chunkIDs
+	}
+
+	resp, err := c.HTTPClient.Request("POST", "/chunk/rm", false, "web", nil, payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to remove chunks: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("failed to remove chunks: HTTP %d, body: %s", resp.StatusCode, string(resp.Body))
+	}
+
+	resJSON, err := resp.JSON()
+	if err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+
+	code, ok := resJSON["code"].(float64)
+	if !ok {
+		return nil, fmt.Errorf("invalid response format: code is not a number")
+	}
+
+	var result SimpleResponse
+	result.Code = int(code)
+	if result.Code == 0 {
+		deletedCount := int64(0)
+		switch data := resJSON["data"].(type) {
+		case float64:
+			deletedCount = int64(data)
+		case map[string]interface{}:
+			if count, ok := data["deleted_count"].(float64); ok {
+				deletedCount = int64(count)
+			}
+		}
+		result.Message = fmt.Sprintf("Success to remove chunks from document %s: %d chunks deleted", docID, deletedCount)
+	} else {
+		result.Message = fmt.Sprintf("Failed to remove chunks: %v", resJSON)
 	}
 	result.Duration = 0
 	return &result, nil
