@@ -66,11 +66,7 @@ class ParserParam(ProcessParamBase):
                 "markdown",
                 "html",
             ],
-            "doc": [
-                "json",
-                "markdown",
-            ],
-            "docx": [
+            "word": [
                 "json",
                 "markdown",
             ],
@@ -84,11 +80,11 @@ class ParserParam(ProcessParamBase):
                 "text",
                 "json",
             ],
-            "markdown": [
+            "text&markdown": [
                 "text",
                 "json",
             ],
-            "text&code": [
+            "code": [
                 "text",
                 "json",
             ],
@@ -110,7 +106,6 @@ class ParserParam(ProcessParamBase):
             "pdf": {
                 "parse_method": "deepdoc",  # deepdoc/plain_text/tcadp_parser/vlm
                 "lang": "Chinese",
-                "flatten_media_to_text": False,
                 "remove_toc": False,
                 "suffix": [
                     "pdf",
@@ -119,7 +114,6 @@ class ParserParam(ProcessParamBase):
             },
             "spreadsheet": {
                 "parse_method": "deepdoc",  # deepdoc/tcadp_parser
-                "flatten_media_to_text": False,
                 "output_format": "html",
                 "suffix": [
                     "xls",
@@ -127,30 +121,21 @@ class ParserParam(ProcessParamBase):
                     "csv",
                 ],
             },
-            "doc": {
+            "word": {
                 "remove_toc": False,
                 "suffix": [
                     "doc",
-                ],
-                "output_format": "json",
-            },
-            "docx": {
-                "flatten_media_to_text": False,
-                "remove_toc": False,
-                "suffix": [
                     "docx",
                 ],
                 "output_format": "json",
             },
-            "markdown": {
-                "flatten_media_to_text": False,
-                "suffix": ["md", "markdown", "mdx"],
+            "text&markdown": {
+                "suffix": ["md", "markdown", "mdx", "txt"],
                 "remove_toc": False,
                 "output_format": "json",
             },
-            "text&code": {
+            "code": {
                 "suffix": [
-                    "txt",
                     "py",
                     "js",
                     "java",
@@ -165,12 +150,12 @@ class ParserParam(ProcessParamBase):
                     "kt",
                     "sql",
                 ],
-                "output_format": "json",
+                "output_format": "text",
             },
             "html": {
                 "suffix": ["htm", "html"],
                 "remove_toc": "false",
-                "output_format": "json",
+                "output_format": "text",
             },
             "slides": {
                 "parse_method": "deepdoc",  # deepdoc/tcadp_parser
@@ -250,15 +235,10 @@ class ParserParam(ProcessParamBase):
             spreadsheet_output_format = spreadsheet_config.get("output_format", "")
             self.check_valid_value(spreadsheet_output_format, "Spreadsheet output format abnormal.", self.allowed_output_format["spreadsheet"])
 
-        doc_config = self.setups.get("doc", "")
+        doc_config = self.setups.get("word", "")
         if doc_config:
             doc_output_format = doc_config.get("output_format", "")
-            self.check_valid_value(doc_output_format, "DOC output format abnormal.", self.allowed_output_format["doc"])
-
-        docx_config = self.setups.get("docx", "")
-        if docx_config:
-            docx_output_format = docx_config.get("output_format", "")
-            self.check_valid_value(docx_output_format, "DOCX output format abnormal.", self.allowed_output_format["docx"])
+            self.check_valid_value(doc_output_format, "Word processer document output format abnormal.", self.allowed_output_format["word"])
 
         slides_config = self.setups.get("slides", "")
         if slides_config:
@@ -271,15 +251,15 @@ class ParserParam(ProcessParamBase):
             if image_parse_method not in ["ocr"]:
                 self.check_empty(image_config.get("lang", ""), "Image VLM language")
 
-        text_config = self.setups.get("markdown", "")
+        text_config = self.setups.get("text&markdown", "")
         if text_config:
             text_output_format = text_config.get("output_format", "")
-            self.check_valid_value(text_output_format, "Markdown output format abnormal.", self.allowed_output_format["markdown"])
+            self.check_valid_value(text_output_format, "Text output format abnormal.", self.allowed_output_format["text&markdown"])
 
-        code_config = self.setups.get("text&code", "")
+        code_config = self.setups.get("code", "")
         if code_config:
             code_output_format = code_config.get("output_format", "")
-            self.check_valid_value(code_output_format, "Text&Code output format abnormal.", self.allowed_output_format["text&code"])
+            self.check_valid_value(code_output_format, "Code output format abnormal.", self.allowed_output_format["code"])
 
         html_config = self.setups.get("html", "")
         if html_config:
@@ -288,13 +268,12 @@ class ParserParam(ProcessParamBase):
 
         audio_config = self.setups.get("audio", "")
         if audio_config:
-            audio_vlm = audio_config.get("vlm") or {}
-            self.check_empty(audio_vlm.get("llm_id"), "Audio VLM")
+            self.check_empty(audio_config.get("llm_id"), "Audio VLM")
 
         video_config = self.setups.get("video", "")
         if video_config:
-            video_vlm = video_config.get("vlm") or {}
-            self.check_empty(video_vlm.get("llm_id"), "Video VLM")
+            self.check_empty(video_config.get("llm_id"), "Video VLM")
+
         email_config = self.setups.get("email", "")
         if email_config:
             email_output_format = email_config.get("output_format", "")
@@ -317,7 +296,6 @@ class Parser(ProcessBase):
         self.callback(random.randint(1, 5) / 100.0, "Start to work on a PDF.")
         conf = self._param.setups["pdf"]
         self.set_output("output_format", conf["output_format"])
-        flatten_media_to_text = conf.get("flatten_media_to_text")
         pdf_parser = None
 
         # Optional PDF post-processing flags applied after parsing.
@@ -577,9 +555,7 @@ class Parser(ProcessBase):
                 layout_counters[layout] = seq + 1
                 b["layoutno"] = f"{layout}-{seq}"
 
-            if flatten_media_to_text:
-                b["doc_type_kwd"] = "text"
-            elif layout == "table":
+            if layout == "table":
                 b["doc_type_kwd"] = "table"
             elif layout == "figure":
                 b["doc_type_kwd"] = "image"
@@ -649,12 +625,15 @@ class Parser(ProcessBase):
             if abstract_idx is not None:
                 bboxes[abstract_idx]["abstract"] = True
 
-        enhance_media_sections_with_vision(
-            bboxes,
-            self._canvas._tenant_id,
-            conf.get("vlm"),
-            callback=self.callback,
-        )
+        print(conf.get("vlm"))
+
+        if conf.get("vlm"):
+            enhance_media_sections_with_vision(
+                bboxes,
+                self._canvas._tenant_id,
+                conf["vlm"],
+                callback=self.callback,
+            )
 
         # Emit the requested final PDF output format.
         if conf.get("output_format") == "json":
@@ -676,7 +655,6 @@ class Parser(ProcessBase):
         self.callback(random.randint(1, 5) / 100.0, "Start to work on a Spreadsheet.")
         conf = self._param.setups["spreadsheet"]
         self.set_output("output_format", conf["output_format"])
-        flatten_media_to_text = conf.get("flatten_media_to_text")
 
         parse_method = conf.get("parse_method", "deepdoc")
 
@@ -732,12 +710,7 @@ class Parser(ProcessBase):
                 # Add tables as text
                 for table in tables:
                     if table:
-                        result.append(
-                            {
-                                "text": table,
-                                "doc_type_kwd": "text" if flatten_media_to_text else "table",
-                            }
-                        )
+                        result.append({"text": table, "doc_type_kwd": "table"})
 
                 self.set_output("json", result)
 
@@ -763,29 +736,11 @@ class Parser(ProcessBase):
             elif conf.get("output_format") == "markdown":
                 self.set_output("markdown", spreadsheet_parser.markdown(blob))
 
-    def _doc(self, name, blob, **kwargs):
-        """Parse DOC files into text/json sections."""
-        self.callback(random.randint(1, 5) / 100.0, "Start to work on a DOC document")
-        conf = self._param.setups["doc"]
+    def _word(self, name, blob, **kwargs):
+        """Parse doc/docx files and optionally remove table-of-contents content."""
+        self.callback(random.randint(1, 5) / 100.0, "Start to work on a Word Processor Document")
+        conf = self._param.setups["word"]
         self.set_output("output_format", conf["output_format"])
-
-        from tika import parser as tika_parser
-
-        parsed = tika_parser.from_buffer(io.BytesIO(blob))
-        sections = [line for line in parsed["content"].split("\n") if line]
-
-        if conf.get("output_format") == "json":
-            self.set_output("json", [{"text": section, "doc_type_kwd": "text"} for section in sections])
-            return
-
-        self.set_output("markdown", "\n".join(sections))
-
-    def _docx(self, name, blob, **kwargs):
-        """Parse DOCX files and optionally remove table-of-contents content."""
-        self.callback(random.randint(1, 5) / 100.0, "Start to work on a DOCX document")
-        conf = self._param.setups["docx"]
-        self.set_output("output_format", conf["output_format"])
-        flatten_media_to_text = conf.get("flatten_media_to_text")
         
         if re.search(r"\.doc$", name, re.IGNORECASE):
             self.set_output("file", {**kwargs.get("file", {}), "outlines": []})
@@ -807,7 +762,7 @@ class Parser(ProcessBase):
 
             sections = [line.strip() for line in content.splitlines() if line and line.strip()]
             if conf.get("remove_toc"):
-                sections = remove_toc_word(sections, [])
+                sections = remove_toc_word(sections, outlines)
 
             if conf.get("output_format") == "json":
                 self.set_output(
@@ -838,7 +793,7 @@ class Parser(ProcessBase):
                     {
                         "text": text,
                         "image": image,
-                        "doc_type_kwd": "text" if flatten_media_to_text or image is None else "image",
+                        "doc_type_kwd": "image" if image is not None else "text",
                     }
                 )
                 if html:
@@ -846,15 +801,16 @@ class Parser(ProcessBase):
                         {
                             "text": html,
                             "image": None,
-                            "doc_type_kwd": "text" if flatten_media_to_text else "table",
+                            "doc_type_kwd": "table",
                         }
                     )
-            enhance_media_sections_with_vision(
-                sections,
-                self._canvas._tenant_id,
-                conf.get("vlm"),
-                callback=self.callback,
-            )
+            if conf.get("vlm"):
+                enhance_media_sections_with_vision(
+                    sections,
+                    self._canvas._tenant_id,
+                    conf["vlm"],
+                    callback=self.callback,
+                )
 
             self.set_output("json", sections)
 
@@ -933,16 +889,15 @@ class Parser(ProcessBase):
                 self.set_output("json", sections)
 
     def _markdown(self, name, blob, **kwargs):
-        """Parse markdown files into text/json sections."""
+        """Parse markdown and txt files into text/json sections."""
         from functools import reduce
 
         from rag.app.naive import Markdown as naive_markdown_parser
         from rag.nlp import concat_img
 
         self.callback(random.randint(1, 5) / 100.0, "Start to work on a markdown.")
-        conf = self._param.setups["markdown"]
+        conf = self._param.setups["text&markdown"]
         self.set_output("output_format", conf["output_format"])
-        flatten_media_to_text = conf.get("flatten_media_to_text")
 
         markdown_parser = naive_markdown_parser()
         sections, tables, section_images = markdown_parser(
@@ -952,6 +907,10 @@ class Parser(ProcessBase):
             delimiter=conf.get("delimiter"),
             return_section_images=True,
         )
+        if name.lower().endswith(".txt") and conf.get("remove_toc") == "true":
+            sections, kept_indices = remove_toc(sections)
+            if section_images:
+                section_images = [section_images[i] for i in kept_indices if i < len(section_images)]
 
         if conf.get("output_format") == "json":
             json_results = []
@@ -968,41 +927,26 @@ class Parser(ProcessBase):
                     # If multiple images found, combine them using concat_img
                     combined_image = reduce(concat_img, images) if len(images) > 1 else images[0]
                     json_result["image"] = combined_image
-                json_result["doc_type_kwd"] = (
-                    "text"
-                    if flatten_media_to_text or json_result.get("image") is None
-                    else "image"
-                )
+                json_result["doc_type_kwd"] = "image" if json_result.get("image") is not None else "text"
                 json_results.append(json_result)
 
-            for table in tables:
-                table_text = table[0][1] if table and table[0] else ""
-                if table_text:
-                    json_results.append(
-                        {
-                            "text": table_text,
-                            "doc_type_kwd": "text" if flatten_media_to_text else "table",
-                        }
-                    )
-
-            enhance_media_sections_with_vision(
-                json_results,
-                self._canvas._tenant_id,
-                conf.get("vlm"),
-                callback=self.callback,
-            )
+            if conf.get("vlm"):
+                enhance_media_sections_with_vision(
+                    json_results,
+                    self._canvas._tenant_id,
+                    conf["vlm"],
+                    callback=self.callback,
+                )
             self.set_output("json", json_results)
         else:
-            texts = [section_text for section_text, _ in sections if section_text]
-            texts.extend(table[0][1] for table in tables if table and table[0] and table[0][1])
-            self.set_output("text", "\n".join(texts))
+            self.set_output("text", "\n".join([section_text for section_text, _ in sections]))
 
     def _code(self, name, blob, **kwargs):
-        """Parse text and source code files as plain text chunks."""
-        self.callback(random.randint(1, 5) / 100.0, "Start to work on a text or code file.")
-        conf = self._param.setups["text&code"]
+        """Parse source code files as plain text chunks."""
+        self.callback(random.randint(1, 5) / 100.0, "Start to work on a code or plain text file.")
+        conf = self._param.setups["code"]
         self.set_output("output_format", conf["output_format"])
-        
+
         sections = TxtParser()(
             name,
             blob,
@@ -1077,14 +1021,13 @@ class Parser(ProcessBase):
         self.callback(random.randint(1, 5) / 100.0, "Start to work on an audio.")
 
         conf = self._param.setups["audio"]
-        vlm = conf.get("vlm")
         self.set_output("output_format", conf["output_format"])
         _, ext = os.path.splitext(name)
         with tempfile.NamedTemporaryFile(suffix=ext) as tmpf:
             tmpf.write(blob)
             tmpf.flush()
             tmp_path = os.path.abspath(tmpf.name)
-            seq2txt_model_config = get_model_config_by_type_and_name(self._canvas.get_tenant_id(), LLMType.SPEECH2TEXT, vlm["llm_id"])
+            seq2txt_model_config = get_model_config_by_type_and_name(self._canvas.get_tenant_id(), LLMType.SPEECH2TEXT, conf["llm_id"])
             seq2txt_mdl = LLMBundle(self._canvas.get_tenant_id(), seq2txt_model_config)
             txt = seq2txt_mdl.transcription(tmp_path)
 
@@ -1095,9 +1038,8 @@ class Parser(ProcessBase):
         self.callback(random.randint(1, 5) / 100.0, "Start to work on an video.")
 
         conf = self._param.setups["video"]
-        vlm = conf.get("vlm")
         self.set_output("output_format", conf["output_format"])
-        cv_model_config = get_model_config_by_type_and_name(self._canvas.get_tenant_id(), LLMType.IMAGE2TEXT, vlm["llm_id"])
+        cv_model_config = get_model_config_by_type_and_name(self._canvas.get_tenant_id(), LLMType.IMAGE2TEXT, conf["llm_id"])
         cv_mdl = LLMBundle(self._canvas.get_tenant_id(), cv_model_config)
         video_prompt = str(conf.get("prompt", "") or "")
         txt = asyncio.run(cv_mdl.async_chat(system="", history=[], gen_conf={}, video_bytes=blob, filename=name, video_prompt=video_prompt))
@@ -1262,13 +1204,12 @@ class Parser(ProcessBase):
         """Dispatch the current file to the matching parser branch by suffix."""
         function_map = {
             "pdf": self._pdf,
-            "markdown": self._markdown,
-            "text&code": self._code,
+            "text&markdown": self._markdown,
+            "code": self._code,
             "html": self._html,
             "spreadsheet": self._spreadsheet,
             "slides": self._slides,
-            "doc": self._doc,
-            "docx": self._docx,
+            "word": self._word,
             "image": self._image,
             "audio": self._audio,
             "video": self._video,
