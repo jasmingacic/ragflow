@@ -47,11 +47,6 @@ export enum TextJsonOutputFormat {
   Json = 'json',
 }
 
-export enum TextJsonOutputFormat {
-  Text = 'text',
-  Json = 'json',
-}
-
 export enum DocxOutputFormat {
   Markdown = 'markdown',
   Json = 'json',
@@ -202,14 +197,12 @@ export const initialParserValues = {
       output_format: PdfOutputFormat.Json,
       parse_method: ParseDocumentType.DeepDOC,
       preprocess: PreprocessValue.main_content,
-      flatten_media_to_text: false,
     },
     {
       fileFormat: FileType.Spreadsheet,
       output_format: SpreadsheetOutputFormat.Html,
       parse_method: ParseDocumentType.DeepDOC,
       preprocess: PreprocessValue.main_content,
-      flatten_media_to_text: false,
     },
     {
       fileFormat: FileType.Image,
@@ -228,7 +221,6 @@ export const initialParserValues = {
       fileFormat: FileType.TextMarkdown,
       output_format: TextMarkdownOutputFormat.Text,
       preprocess: PreprocessValue.main_content,
-      flatten_media_to_text: false,
     },
     {
       fileFormat: FileType.Code,
@@ -249,7 +241,6 @@ export const initialParserValues = {
       fileFormat: FileType.Docx,
       output_format: DocxOutputFormat.Json,
       preprocess: PreprocessValue.main_content,
-      flatten_media_to_text: false,
     },
     {
       fileFormat: FileType.PowerPoint,
