@@ -47,6 +47,11 @@ export enum TextJsonOutputFormat {
   Json = 'json',
 }
 
+export enum TextJsonOutputFormat {
+  Text = 'text',
+  Json = 'json',
+}
+
 export enum DocxOutputFormat {
   Markdown = 'markdown',
   Json = 'json',
