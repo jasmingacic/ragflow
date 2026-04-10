@@ -14,9 +14,9 @@
     "canvas_category": "dataflow_canvas",
         "dsl": {
             "components": {
-                "Extractor:SharpTaxisSay": {
+                "Extractor:PublicPlumsKiss": {
                     "downstream": [
-                        "Tokenizer:ShaggyShrimpsLose"
+                        "Tokenizer:FullBottlesDeny"
                     ],
                     "obj": {
                         "component_name": "Extractor",
@@ -24,7 +24,7 @@
                             "field_name": "summary",
                             "frequencyPenaltyEnabled": true,
                             "frequency_penalty": 0.7,
-                            "llm_id": "THUDM/GLM-4.1V-9B-Thinking@SILICONFLOW",
+                            "llm_id": "Qwen/Qwen3-8B@SILICONFLOW",
                             "maxTokensEnabled": false,
                             "max_tokens": 256,
                             "outputs": {
@@ -37,20 +37,20 @@
                             "presence_penalty": 0.4,
                             "prompts": [
                                 {
-                                    "content": "Text to Summarize:\n{TokenChunker:ModernPetsKneel@chunks}",
+                                    "content": "Text to Summarize:\n{TokenChunker:FancyCitiesStick@chunks}",
                                     "role": "user"
                                 }
                             ],
                             "sys_prompt": "Act as a precise summarizer. Your task is to create a summary of the provided content that is both concise and faithful to the original.\n\nKey Instructions:\n1. Accuracy: Strictly base the summary on the information given. Do not introduce any new facts, conclusions, or interpretations that are not explicitly stated.\n2. Language: Write the summary in the same language as the source text.\n3. Objectivity: Present the key points without bias, preserving the original intent and tone of the content. Do not editorialize.\n4. Conciseness: Focus on the most important ideas, omitting minor details and fluff.",
                             "temperature": 0.1,
                             "temperatureEnabled": true,
-                            "tenant_llm_id": 63,
+                            "tenant_llm_id": 54,
                             "topPEnabled": true,
                             "top_p": 0.3
                         }
                     },
                     "upstream": [
-                        "TokenChunker:ModernPetsKneel"
+                        "TokenChunker:FancyCitiesStick"
                     ]
                 },
                 "File": {
@@ -65,7 +65,7 @@
                 },
                 "Parser:HipSignsRhyme": {
                     "downstream": [
-                        "TokenChunker:ModernPetsKneel"
+                        "TokenChunker:FancyCitiesStick"
                     ],
                     "obj": {
                         "component_name": "Parser",
@@ -97,7 +97,6 @@
                                     ]
                                 },
                                 "docx": {
-                                    "flatten_media_to_text": false,
                                     "output_format": "json",
                                     "preprocess": "main_content",
                                     "suffix": [
@@ -144,7 +143,6 @@
                                     "system_prompt": ""
                                 },
                                 "markdown": {
-                                    "flatten_media_to_text": false,
                                     "output_format": "json",
                                     "preprocess": "main_content",
                                     "suffix": [
@@ -155,7 +153,6 @@
                                     "vlm": {}
                                 },
                                 "pdf": {
-                                    "flatten_media_to_text": false,
                                     "output_format": "json",
                                     "parse_method": "DeepDOC",
                                     "preprocess": "main_content",
@@ -174,7 +171,6 @@
                                     ]
                                 },
                                 "spreadsheet": {
-                                    "flatten_media_to_text": false,
                                     "output_format": "html",
                                     "parse_method": "DeepDOC",
                                     "preprocess": "main_content",
@@ -212,9 +208,9 @@
                         "File"
                     ]
                 },
-                "TokenChunker:ModernPetsKneel": {
+                "TokenChunker:FancyCitiesStick": {
                     "downstream": [
-                        "Extractor:SharpTaxisSay"
+                        "Extractor:PublicPlumsKiss"
                     ],
                     "obj": {
                         "component_name": "TokenChunker",
@@ -238,7 +234,7 @@
                         "Parser:HipSignsRhyme"
                     ]
                 },
-                "Tokenizer:ShaggyShrimpsLose": {
+                "Tokenizer:FullBottlesDeny": {
                     "downstream": [],
                     "obj": {
                         "component_name": "Tokenizer",
@@ -253,12 +249,17 @@
                         }
                     },
                     "upstream": [
-                        "Extractor:SharpTaxisSay"
+                        "Extractor:PublicPlumsKiss"
                     ]
                 }
             },
             "globals": {
-                "sys.history": []
+                "sys.conversation_turns": 0,
+                "sys.date": "",
+                "sys.files": [],
+                "sys.history": [],
+                "sys.query": "",
+                "sys.user_id": ""
             },
             "graph": {
                 "edges": [
@@ -270,31 +271,28 @@
                         "targetHandle": "end"
                     },
                     {
-                        "id": "xy-edge__Parser:HipSignsRhymestart-TokenChunker:ModernPetsKneelend",
+                        "id": "xy-edge__Parser:HipSignsRhymestart-TokenChunker:FancyCitiesStickend",
                         "source": "Parser:HipSignsRhyme",
                         "sourceHandle": "start",
-                        "target": "TokenChunker:ModernPetsKneel",
-                        "targetHandle": "end"
-                    },
-                    {
-                        "id": "xy-edge__TokenChunker:ModernPetsKneelstart-Extractor:SharpTaxisSayend",
-                        "source": "TokenChunker:ModernPetsKneel",
-                        "sourceHandle": "start",
-                        "target": "Extractor:SharpTaxisSay",
+                        "target": "TokenChunker:FancyCitiesStick",
                         "targetHandle": "end"
                     },
                     {
                         "data": {
                             "isHovered": false
                         },
-                        "id": "xy-edge__Extractor:SharpTaxisSaystart-Tokenizer:ShaggyShrimpsLoseend",
-                        "markerEnd": "logo",
-                        "source": "Extractor:SharpTaxisSay",
+                        "id": "xy-edge__TokenChunker:FancyCitiesStickstart-Extractor:PublicPlumsKissend",
+                        "source": "TokenChunker:FancyCitiesStick",
                         "sourceHandle": "start",
-                        "target": "Tokenizer:ShaggyShrimpsLose",
-                        "targetHandle": "end",
-                        "type": "buttonEdge",
-                        "zIndex": 1001
+                        "target": "Extractor:PublicPlumsKiss",
+                        "targetHandle": "end"
+                    },
+                    {
+                        "id": "xy-edge__Extractor:PublicPlumsKissstart-Tokenizer:FullBottlesDenyend",
+                        "source": "Extractor:PublicPlumsKiss",
+                        "sourceHandle": "start",
+                        "target": "Tokenizer:FullBottlesDeny",
+                        "targetHandle": "end"
                     }
                 ],
                 "nodes": [
@@ -305,7 +303,7 @@
                         },
                         "id": "File",
                         "measured": {
-                            "height": 50,
+                            "height": 49,
                             "width": 200
                         },
                         "position": {
@@ -340,14 +338,12 @@
                                 "setups": [
                                     {
                                         "fileFormat": "pdf",
-                                        "flatten_media_to_text": false,
                                         "output_format": "json",
                                         "parse_method": "DeepDOC",
                                         "preprocess": "main_content"
                                     },
                                     {
                                         "fileFormat": "spreadsheet",
-                                        "flatten_media_to_text": false,
                                         "output_format": "html",
                                         "parse_method": "DeepDOC",
                                         "preprocess": "main_content"
@@ -376,7 +372,6 @@
                                     },
                                     {
                                         "fileFormat": "markdown",
-                                        "flatten_media_to_text": false,
                                         "output_format": "json",
                                         "preprocess": "main_content"
                                     },
@@ -397,7 +392,6 @@
                                     },
                                     {
                                         "fileFormat": "docx",
-                                        "flatten_media_to_text": false,
                                         "output_format": "json",
                                         "preprocess": "main_content"
                                     },
@@ -415,7 +409,7 @@
                         "dragging": false,
                         "id": "Parser:HipSignsRhyme",
                         "measured": {
-                            "height": 57,
+                            "height": 197,
                             "width": 200
                         },
                         "position": {
@@ -430,6 +424,7 @@
                     {
                         "data": {
                             "form": {
+                                "children_delimiters": [],
                                 "chunk_token_size": 512,
                                 "delimiter_mode": "token_size",
                                 "delimiters": [
@@ -449,18 +444,61 @@
                             "label": "TokenChunker",
                             "name": "Token Chunker_0"
                         },
-                        "id": "TokenChunker:ModernPetsKneel",
+                        "id": "TokenChunker:FancyCitiesStick",
                         "measured": {
-                            "height": 74,
+                            "height": 73,
                             "width": 200
                         },
                         "position": {
                             "x": 616.9952409420641,
                             "y": 195.39629819663406
                         },
+                        "selected": false,
                         "sourcePosition": "right",
                         "targetPosition": "left",
                         "type": "chunkerNode"
+                    },
+                    {
+                        "data": {
+                            "form": {
+                                "field_name": "summary",
+                                "frequencyPenaltyEnabled": true,
+                                "frequency_penalty": 0.7,
+                                "llm_id": "Qwen/Qwen3-8B@SILICONFLOW",
+                                "maxTokensEnabled": false,
+                                "max_tokens": 256,
+                                "outputs": {
+                                    "chunks": {
+                                        "type": "Array<Object>",
+                                        "value": []
+                                    }
+                                },
+                                "presencePenaltyEnabled": true,
+                                "presence_penalty": 0.4,
+                                "prompts": "Text to Summarize:\n{TokenChunker:FancyCitiesStick@chunks}",
+                                "sys_prompt": "Act as a precise summarizer. Your task is to create a summary of the provided content that is both concise and faithful to the original.\n\nKey Instructions:\n1. Accuracy: Strictly base the summary on the information given. Do not introduce any new facts, conclusions, or interpretations that are not explicitly stated.\n2. Language: Write the summary in the same language as the source text.\n3. Objectivity: Present the key points without bias, preserving the original intent and tone of the content. Do not editorialize.\n4. Conciseness: Focus on the most important ideas, omitting minor details and fluff.",
+                                "temperature": 0.1,
+                                "temperatureEnabled": true,
+                                "tenant_llm_id": 54,
+                                "topPEnabled": true,
+                                "top_p": 0.3
+                            },
+                            "label": "Extractor",
+                            "name": "Summarizer"
+                        },
+                        "id": "Extractor:PublicPlumsKiss",
+                        "measured": {
+                            "height": 89,
+                            "width": 200
+                        },
+                        "position": {
+                            "x": 916.9952409420641,
+                            "y": 195.39629819663406
+                        },
+                        "selected": true,
+                        "sourcePosition": "right",
+                        "targetPosition": "left",
+                        "type": "contextNode"
                     },
                     {
                         "data": {
@@ -476,17 +514,15 @@
                             "label": "Tokenizer",
                             "name": "Indexer_0"
                         },
-                        "dragging": false,
-                        "id": "Tokenizer:ShaggyShrimpsLose",
+                        "id": "Tokenizer:FullBottlesDeny",
                         "measured": {
-                            "height": 114,
+                            "height": 113,
                             "width": 200
                         },
                         "position": {
-                            "x": 1188.9891545215792,
-                            "y": 159.26426539640332
+                            "x": 1216.9952409420641,
+                            "y": 195.39629819663406
                         },
-                        "selected": false,
                         "sourcePosition": "right",
                         "targetPosition": "left",
                         "type": "tokenizerNode"
@@ -494,45 +530,26 @@
                     {
                         "data": {
                             "form": {
-                                "field_name": "summary",
-                                "frequencyPenaltyEnabled": true,
-                                "frequency_penalty": 0.7,
-                                "llm_id": "THUDM/GLM-4.1V-9B-Thinking@SILICONFLOW",
-                                "maxTokensEnabled": false,
-                                "max_tokens": 256,
-                                "outputs": {
-                                    "chunks": {
-                                        "type": "Array<Object>",
-                                        "value": []
-                                    }
-                                },
-                                "presencePenaltyEnabled": true,
-                                "presence_penalty": 0.4,
-                                "prompts": "Text to Summarize:\n{TokenChunker:ModernPetsKneel@chunks}",
-                                "sys_prompt": "Act as a precise summarizer. Your task is to create a summary of the provided content that is both concise and faithful to the original.\n\nKey Instructions:\n1. Accuracy: Strictly base the summary on the information given. Do not introduce any new facts, conclusions, or interpretations that are not explicitly stated.\n2. Language: Write the summary in the same language as the source text.\n3. Objectivity: Present the key points without bias, preserving the original intent and tone of the content. Do not editorialize.\n4. Conciseness: Focus on the most important ideas, omitting minor details and fluff.",
-                                "temperature": 0.1,
-                                "temperatureEnabled": true,
-                                "tenant_llm_id": 63,
-                                "topPEnabled": true,
-                                "top_p": 0.3
+                                "text": "Using summary to build both text and vector indexes."
                             },
-                            "label": "Extractor",
-                            "name": "Summarization"
+                            "label": "Note",
+                            "name": "Index Summary"
                         },
+                        "dragHandle": ".note-drag-handle",
                         "dragging": false,
-                        "id": "Extractor:SharpTaxisSay",
+                        "id": "Note:ElevenKingsPick",
                         "measured": {
-                            "height": 90,
-                            "width": 200
+                            "height": 127,
+                            "width": 267
                         },
                         "position": {
-                            "x": 878.855872986265,
-                            "y": 177.33028179651868
+                            "x": 735.9586746349814,
+                            "y": 315.614230763182
                         },
-                        "selected": true,
+                        "selected": false,
                         "sourcePosition": "right",
                         "targetPosition": "left",
-                        "type": "contextNode"
+                        "type": "noteNode"
                     }
                 ]
             },
