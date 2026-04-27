@@ -5,7 +5,6 @@ import { IToken } from '@/interfaces/database/chat';
 import { ITenantInfo } from '@/interfaces/database/knowledge';
 import { ILangfuseConfig } from '@/interfaces/database/system';
 import {
-  ISystemStatus,
   ITenant,
   ITenantUser,
   IUserInfo,
@@ -213,34 +212,12 @@ export const useFetchSystemVersion = () => {
         setVersion(data.data);
         setLoading(false);
       }
-    } catch (error) {
+    } catch {
       setLoading(false);
     }
   }, []);
 
   return { fetchSystemVersion, version, loading };
-};
-
-export const useFetchSystemStatus = () => {
-  const [systemStatus, setSystemStatus] = useState<ISystemStatus>(
-    {} as ISystemStatus,
-  );
-  const [loading, setLoading] = useState(false);
-
-  const fetchSystemStatus = useCallback(async () => {
-    setLoading(true);
-    const { data } = await userService.getSystemStatus();
-    if (data.code === 0) {
-      setSystemStatus(data.data);
-      setLoading(false);
-    }
-  }, []);
-
-  return {
-    systemStatus,
-    fetchSystemStatus,
-    loading,
-  };
 };
 
 export const useFetchManualSystemTokenList = () => {
