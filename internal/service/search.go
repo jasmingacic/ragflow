@@ -55,8 +55,8 @@ type ListSearchAppsResponse struct {
 	Total      int64                    `json:"total"`
 }
 
-// ListSearchApps list search apps with advanced filtering (equivalent to list_search_app)
-func (s *SearchService) ListSearchApps(userID string, keywords string, page, pageSize int, orderby string, desc bool, ownerIDs []string) (*ListSearchAppsResponse, error) {
+// ListSearches list search apps with advanced filtering (equivalent to list_search_app)
+func (s *SearchService) ListSearches(userID string, keywords string, page, pageSize int, orderby string, desc bool, ownerIDs []string) (*ListSearchAppsResponse, error) {
 	var searches []*entity.Search
 	var total int64
 	var err error
@@ -329,4 +329,31 @@ func (s *SearchService) UpdateSearch(userID string, searchID string, req *Update
 	}
 
 	return updatedSearch, nil
+}
+
+// GetDetail gets search details by ID including search_config
+func (s *SearchService) GetDetail(searchID string) (map[string]interface{}, error) {
+	search, err := s.searchDAO.GetByID(searchID)
+
+	if err != nil {
+		return nil, err
+	}
+
+	result := map[string]interface{}{
+		"id":            search.ID,
+		"tenant_id":     search.TenantID,
+		"name":          search.Name,
+		"description":   search.Description,
+		"created_by":    search.CreatedBy,
+		"status":        search.Status,
+		"create_time":   search.CreateTime,
+		"update_time":   search.UpdateTime,
+		"search_config": search.SearchConfig,
+	}
+
+	if search.Avatar != nil {
+		result["avatar"] = *search.Avatar
+	}
+
+	return result, nil
 }
