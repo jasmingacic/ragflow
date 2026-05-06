@@ -1,5 +1,5 @@
 import { Authorization } from '@/constants/authorization';
-import { IRenameTag } from '@/interfaces/database/knowledge';
+import { IRenameTag } from '@/interfaces/database/dataset';
 import {
   IFetchDocumentListRequestBody,
   IFetchKnowledgeListRequestParams,
@@ -18,14 +18,13 @@ const {
   documentChangeStatus,
   documentChangeParser,
   documentThumbnails,
-  retrievalTest,
-  documentRun,
+  documentIngest,
   documentUpload,
   webCrawl,
-  knowledgeGraph,
   listTagByKnowledgeIds,
   setMeta,
   getMeta,
+  getMetaKeys,
   retrievalTestShare,
 } = api;
 
@@ -47,8 +46,8 @@ const methods = {
     url: documentChangeStatus,
     method: 'post',
   },
-  documentRun: {
-    url: documentRun,
+  documentIngest: {
+    url: documentIngest,
     method: 'post',
   },
   documentChangeParser: {
@@ -71,14 +70,6 @@ const methods = {
     url: setMeta,
     method: 'post',
   },
-  retrievalTest: {
-    url: retrievalTest,
-    method: 'post',
-  },
-  knowledgeGraph: {
-    url: knowledgeGraph,
-    method: 'get',
-  },
   listTagByKnowledgeIds: {
     url: listTagByKnowledgeIds,
     method: 'get',
@@ -89,6 +80,10 @@ const methods = {
   },
   getMeta: {
     url: getMeta,
+    method: 'get',
+  },
+  getMetaKeys: {
+    url: getMetaKeys,
     method: 'get',
   },
   retrievalTestShare: {
@@ -151,6 +146,17 @@ const getAvailableParam = (available?: number) => {
 };
 
 const chunkService = {
+  retrievalTest: async (params: Record<string, any>) => {
+    const datasetId = getDatasetId(params);
+    if (!datasetId) {
+      throw new Error(
+        'dataset_id (or kb_id/knowledge_id) is required for retrievalTest',
+      );
+    }
+    return request.post(api.retrievalTest(datasetId), {
+      data: params,
+    });
+  },
   chunkList: async (params: Record<string, any>) => {
     const datasetId = getDatasetId(params);
     const documentId = getDocumentId(params);
@@ -235,8 +241,21 @@ const kbService = {
   ...chunkService,
 };
 
-export const getKbDetail = (datasetId: string) =>
-  request.get(api.getKbDetail(datasetId));
+export const getKbDetail = async (datasetId: string) => {
+  const response = await request.get(api.getKbDetail(datasetId));
+  // The /api/v1/datasets/<id> endpoint returns chunk_count/document_count,
+  // but legacy consumers (e.g. the GraphRAG/Raptor "magic wand" enable check
+  // in dataset/index.tsx) read chunk_num/doc_num. Normalize both shapes.
+  if (response.data?.code === 0 && response.data.data) {
+    const d = response.data.data;
+    response.data.data = {
+      ...d,
+      chunk_num: d.chunk_num ?? d.chunk_count,
+      doc_num: d.doc_num ?? d.document_count,
+    };
+  }
+  return response;
+};
 
 export const listTag = (knowledgeId: string) =>
   request.get(api.listTag(knowledgeId));
@@ -254,7 +273,7 @@ export function getKnowledgeGraph(knowledgeId: string) {
 }
 
 export function deleteKnowledgeGraph(knowledgeId: string) {
-  return request.delete(api.getKnowledgeGraph(knowledgeId));
+  return request.delete(api.knowledgeGraph(knowledgeId));
 }
 
 export const listDataset = (params?: IFetchKnowledgeListRequestParams) =>
@@ -328,6 +347,12 @@ export const renameDocument = (
   data: { name?: string },
 ) => request.patch(api.documentRename(datasetId, documentId), { data });
 
+export const changeDocumentParser = (
+  datasetId: string,
+  documentId: string,
+  data: { name?: string },
+) => request.patch(api.documentChangeParser(datasetId, documentId), { data });
+
 export const deleteDocument = (datasetId: string, documentIds: string[]) =>
   request.delete(api.documentDelete(datasetId), { data: { ids: documentIds } });
 
@@ -372,6 +397,17 @@ export const updateDocumentMetaDataConfig = ({
     data: { ...data },
   });
 
+export const changeDocumentsStatus = ({
+  kb_id,
+  doc_ids,
+  status,
+}: {
+  kb_id: string;
+  doc_ids?: string[];
+  status: number;
+}) =>
+  request.post(api.documentChangeStatus(kb_id), { data: { doc_ids, status } });
+
 export const listDataPipelineLogDocument = (
   datasetId: string,
   params?: Record<string, any>,
@@ -399,11 +435,13 @@ export const kbUpdateMetaData = (
 export function deletePipelineTask({
   kb_id,
   type,
+  wipe,
 }: {
   kb_id: string;
   type: ProcessingType;
+  wipe?: boolean;
 }) {
-  return request.delete(api.unbindPipelineTask(kb_id, type));
+  return request.delete(api.unbindPipelineTask(kb_id, type, wipe));
 }
 
 export default kbService;

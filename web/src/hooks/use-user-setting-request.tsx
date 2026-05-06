@@ -2,7 +2,7 @@ import message from '@/components/ui/message';
 import { Modal } from '@/components/ui/modal/modal';
 import { ResponseGetType } from '@/interfaces/database/base';
 import { IToken } from '@/interfaces/database/chat';
-import { ITenantInfo } from '@/interfaces/database/knowledge';
+import { ITenantInfo } from '@/interfaces/database/dataset';
 import { ILangfuseConfig } from '@/interfaces/database/system';
 import {
   ITenant,
@@ -212,7 +212,8 @@ export const useFetchSystemVersion = () => {
         setVersion(data.data);
         setLoading(false);
       }
-    } catch {
+    } catch (error) {
+      console.warn(error);
       setLoading(false);
     }
   }, []);

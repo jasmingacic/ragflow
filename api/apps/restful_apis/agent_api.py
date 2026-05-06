@@ -611,6 +611,7 @@ def delete_agent(agent_id, tenant_id):
 async def update_agent(agent_id, tenant_id):
     req = {k: v for k, v in (await get_request_json()).items() if v is not None}
     req["user_id"] = tenant_id
+    req["release"] = bool(req.get("release", ""))
 
     if req.get("dsl") is not None:
         try:
@@ -646,6 +647,7 @@ async def update_agent(agent_id, tenant_id):
             user_canvas_id=agent_id,
             title=UserCanvasVersionService.build_version_title(owner_nickname, agent_title_for_version),
             dsl=req["dsl"],
+            release=req.get("release"),
         )
         replica_ok = CanvasReplicaService.replace_for_set(
             canvas_id=agent_id,
@@ -844,9 +846,10 @@ async def test_db_connection():
 
 
 @manager.route("/agents/chat/completion", methods=["POST"])  # noqa: F821
+@manager.route("/agents/chat/completions", methods=["POST"])  # noqa: F821
 @login_required
 @add_tenant_id_to_kwargs
-async def agent_chat_completion(tenant_id):
+async def agent_chat_completion(tenant_id, agent_id=None):
     # This endpoint serves two execution modes:
     # 1. Draft/runtime execution without session state. The request runs against the caller's
     #    runtime replica, which is populated from the editable canvas state.
@@ -863,7 +866,7 @@ async def agent_chat_completion(tenant_id):
     # - Regular mode emits internal agent events.
     # - openai-compatible mode reshapes the same execution into an OpenAI-like wire format.
     req = await get_request_json()
-    agent_id = req.get("agent_id")
+    agent_id = agent_id or req.get("agent_id")
     openai_compatible = bool(req.get("openai-compatible", False))
     if not agent_id:
         return get_json_result(
