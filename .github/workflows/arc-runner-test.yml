@@ -84,6 +84,7 @@ jobs:
           sed -i 's#--mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked ##g' Dockerfile
           sed -i 's#--mount=type=cache,id=ragflow_uv,target=/root/.cache/uv,sharing=locked ##g' Dockerfile
           sed -i 's#cd web && npm install && npm run build#echo "Frontend pre-built, skipping"#g' Dockerfile
+          sed -i 's|https://mirrors.aliyun.com/pypi/simple|https://pypi.org/simple|g' pyproject.toml
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
