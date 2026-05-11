@@ -38,15 +38,21 @@ jobs:
             git checkout --ours .github/workflows/release-build.yml 2>/dev/null || true
             git checkout --ours .github/workflows/sync-upstream.yml 2>/dev/null || true
 
-            # Check if there are still unresolved conflicts
-            CONFLICTS=$(git diff --name-only --diff-filter=U)
-            if [ -n "$CONFLICTS" ]; then
-              echo "::error::Unresolved merge conflicts in: $CONFLICTS"
-              git merge --abort
-              exit 1
+            # Stage the files we resolved as "ours" so they're no longer in the conflict list
+            git add helm/values.yaml helm/Chart.yaml pyproject.toml uv.lock \
+              .github/workflows/arc-runner-test.yml \
+              .github/workflows/release-build.yml \
+              .github/workflows/sync-upstream.yml 2>/dev/null || true
+
+            # For any remaining conflicts, take upstream
+            REMAINING=$(git diff --name-only --diff-filter=U)
+            if [ -n "$REMAINING" ]; then
+              echo "Taking upstream for remaining conflicts:"
+              echo "$REMAINING"
+              echo "$REMAINING" | xargs git checkout --theirs --
+              echo "$REMAINING" | xargs git add --
             fi
 
-            git add -A
             git commit -m "Merge upstream/main with conflict resolution"
           fi
 
