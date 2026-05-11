@@ -29,6 +29,7 @@ from api.db.joint_services.tenant_model_service import (
     get_model_config_by_type_and_name,
     get_tenant_default_model_by_type,
 )
+from api.db.services.chunk_feedback_service import ChunkFeedbackService
 from api.db.services.conversation_service import ConversationService, structure_answer
 from api.db.services.dialog_service import DialogService, async_chat, gen_mindmap
 from api.db.services.knowledgebase_service import KnowledgebaseService
@@ -46,7 +47,7 @@ from api.utils.api_utils import (
 )
 from api.utils.tenant_utils import ensure_tenant_model_id_for_params
 from common.constants import LLMType, RetCode, StatusEnum
-from common.misc_utils import get_uuid
+from common.misc_utils import get_uuid, thread_pool_exec
 from rag.prompts.generator import chunks_format
 from rag.prompts.template import load_prompt
 
@@ -127,8 +128,9 @@ def _build_session_response(conv: dict) -> dict:
     return conv
 
 
-def _ensure_owned_chat(chat_id):
-    return DialogService.query(
+async def _ensure_owned_chat(chat_id):
+    return await thread_pool_exec(
+        DialogService.query,
         tenant_id=current_user.id, id=chat_id, status=StatusEnum.VALID.value
     )
 
@@ -150,7 +152,7 @@ def _build_default_completion_dialog():
     )
 
 
-def _create_session_for_completion(chat_id, dialog, user_id):
+async def _create_session_for_completion(chat_id, dialog, user_id):
     conv = {
         "id": get_uuid(),
         "dialog_id": chat_id,
@@ -159,14 +161,14 @@ def _create_session_for_completion(chat_id, dialog, user_id):
         "user_id": user_id,
         "reference": [],
     }
-    ConversationService.save(**conv)
-    ok, conv_obj = ConversationService.get_by_id(conv["id"])
+    await thread_pool_exec(ConversationService.save, **conv)
+    ok, conv_obj = await thread_pool_exec(ConversationService.get_by_id, conv["id"])
     if not ok:
         raise LookupError("Fail to create a session!")
     return conv_obj
 
 
-def _validate_llm_id(llm_id, tenant_id, llm_setting=None):
+async def _validate_llm_id(llm_id, tenant_id, llm_setting=None):
     if not llm_id:
         return None
 
@@ -175,7 +177,8 @@ def _validate_llm_id(llm_id, tenant_id, llm_setting=None):
     if model_type not in {"chat", "image2text"}:
         model_type = "chat"
 
-    if not TenantLLMService.query(
+    if not await thread_pool_exec(
+        TenantLLMService.query,
         tenant_id=tenant_id,
         llm_name=llm_name,
         llm_factory=llm_factory,
@@ -185,13 +188,14 @@ def _validate_llm_id(llm_id, tenant_id, llm_setting=None):
     return None
 
 
-def _validate_rerank_id(rerank_id, tenant_id):
+async def _validate_rerank_id(rerank_id, tenant_id):
     if not rerank_id:
         return None
     llm_name, llm_factory = TenantLLMService.split_model_name_and_factory(rerank_id)
     if llm_name in _DEFAULT_RERANK_MODELS:
         return None
-    if TenantLLMService.query(
+    if await thread_pool_exec(
+        TenantLLMService.query,
         tenant_id=tenant_id,
         llm_name=llm_name,
         llm_factory=llm_factory,
@@ -210,7 +214,7 @@ def _validate_rerank_id(rerank_id, tenant_id):
 #     return None
 
 
-def _validate_dataset_ids(dataset_ids, tenant_id):
+async def _validate_dataset_ids(dataset_ids, tenant_id):
     if dataset_ids is None:
         return []
     if not isinstance(dataset_ids, list):
@@ -219,9 +223,9 @@ def _validate_dataset_ids(dataset_ids, tenant_id):
     normalized_ids = [dataset_id for dataset_id in dataset_ids if dataset_id]
     kbs = []
     for dataset_id in normalized_ids:
-        if not KnowledgebaseService.accessible(kb_id=dataset_id, user_id=tenant_id):
+        if not await thread_pool_exec(KnowledgebaseService.accessible, kb_id=dataset_id, user_id=tenant_id):
             return f"You don't own the dataset {dataset_id}"
-        matches = KnowledgebaseService.query(id=dataset_id)
+        matches = await thread_pool_exec(KnowledgebaseService.query, id=dataset_id)
         if not matches:
             return f"You don't own the dataset {dataset_id}"
         kb = matches[0]
@@ -267,19 +271,19 @@ async def create():
         req["name"] = name
 
         if "dataset_ids" in req:
-            kb_ids = _validate_dataset_ids(req.get("dataset_ids"), current_user.id)
+            kb_ids = await _validate_dataset_ids(req.get("dataset_ids"), current_user.id)
             if isinstance(kb_ids, str):
                 return get_data_error_result(message=kb_ids)
             req["kb_ids"] = kb_ids
             req.pop("dataset_ids", None)
 
         if "llm_id" in req:
-            err = _validate_llm_id(req.get("llm_id"), current_user.id, req.get("llm_setting"))
+            err = await _validate_llm_id(req.get("llm_id"), current_user.id, req.get("llm_setting"))
             if err:
                 return get_data_error_result(message=err)
 
         if "rerank_id" in req:
-            err = _validate_rerank_id(req.get("rerank_id"), current_user.id)
+            err = await _validate_rerank_id(req.get("rerank_id"), current_user.id)
             if err:
                 return get_data_error_result(message=err)
 
@@ -334,7 +338,7 @@ async def create():
 
 @manager.route("/chats", methods=["GET"])  # noqa: F821
 @login_required
-def list_chats():
+async def list_chats():
     chat_id = request.args.get("id")
     name = request.args.get("name")
     keywords = request.args.get("keywords", "")
@@ -350,8 +354,9 @@ def list_chats():
         items_per_page = int(request.args.get("page_size", 0))
 
         if owner_ids:
-            chats, total = DialogService.get_by_tenant_ids(
-                owner_ids, current_user.id, 0, 0, orderby, desc, keywords, **exact_filters
+            chats, total = await thread_pool_exec(
+                DialogService.get_by_tenant_ids,
+                owner_ids, current_user.id, 0, 0, orderby, desc, keywords, **exact_filters,
             )
             chats = [chat for chat in chats if chat["tenant_id"] in owner_ids]
             total = len(chats)
@@ -359,8 +364,9 @@ def list_chats():
                 start = (page_number - 1) * items_per_page
                 chats = chats[start : start + items_per_page]
         else:
-            chats, total = DialogService.get_by_tenant_ids(
-                [], current_user.id, page_number, items_per_page, orderby, desc, keywords, **exact_filters
+            chats, total = await thread_pool_exec(
+                DialogService.get_by_tenant_ids,
+                [], current_user.id, page_number, items_per_page, orderby, desc, keywords, **exact_filters,
             )
 
         return get_json_result(
@@ -372,12 +378,13 @@ def list_chats():
 
 @manager.route("/chats/<chat_id>", methods=["GET"])  # noqa: F821
 @login_required
-def get_chat(chat_id):
+async def get_chat(chat_id):
     try:
-        tenants = UserTenantService.query(user_id=current_user.id)
+        tenants = await thread_pool_exec(UserTenantService.query, user_id=current_user.id)
         for tenant in tenants:
-            if DialogService.query(
-                tenant_id=tenant.tenant_id, id=chat_id, status=StatusEnum.VALID.value
+            if await thread_pool_exec(
+                DialogService.query,
+                tenant_id=tenant.tenant_id, id=chat_id, status=StatusEnum.VALID.value,
             ):
                 break
         else:
@@ -387,7 +394,7 @@ def get_chat(chat_id):
                 code=RetCode.AUTHENTICATION_ERROR,
             )
 
-        ok, chat = DialogService.get_by_id(chat_id)
+        ok, chat = await thread_pool_exec(DialogService.get_by_id, chat_id)
         if not ok:
             return get_data_error_result(message="Chat not found!")
         return get_json_result(data=_build_chat_response(chat))
@@ -398,7 +405,7 @@ def get_chat(chat_id):
 @manager.route("/chats/<chat_id>", methods=["PUT"])  # noqa: F821
 @login_required
 async def update_chat(chat_id):
-    if not _ensure_owned_chat(chat_id):
+    if not await _ensure_owned_chat(chat_id):
         return get_json_result(
             data=False, message="No authorization.", code=RetCode.AUTHENTICATION_ERROR
         )
@@ -424,19 +431,19 @@ async def update_chat(chat_id):
             req["name"] = name
 
         if "dataset_ids" in req:
-            kb_ids = _validate_dataset_ids(req.get("dataset_ids"), current_user.id)
+            kb_ids = await _validate_dataset_ids(req.get("dataset_ids"), current_user.id)
             if isinstance(kb_ids, str):
                 return get_data_error_result(message=kb_ids)
             req["kb_ids"] = kb_ids
             req.pop("dataset_ids", None)
 
         if "llm_id" in req:
-            err = _validate_llm_id(req.get("llm_id"), current_user.id, req.get("llm_setting"))
+            err = await _validate_llm_id(req.get("llm_id"), current_user.id, req.get("llm_setting"))
             if err:
                 return get_data_error_result(message=err)
 
         if "rerank_id" in req:
-            err = _validate_rerank_id(req.get("rerank_id"), current_user.id)
+            err = await _validate_rerank_id(req.get("rerank_id"), current_user.id)
             if err:
                 return get_data_error_result(message=err)
 
@@ -484,7 +491,7 @@ async def update_chat(chat_id):
 @manager.route("/chats/<chat_id>", methods=["PATCH"])  # noqa: F821
 @login_required
 async def patch_chat(chat_id):
-    if not _ensure_owned_chat(chat_id):
+    if not await _ensure_owned_chat(chat_id):
         return get_json_result(
             data=False, message="No authorization.", code=RetCode.AUTHENTICATION_ERROR
         )
@@ -508,19 +515,19 @@ async def patch_chat(chat_id):
                 req["name"] = name
 
         if "dataset_ids" in req:
-            kb_ids = _validate_dataset_ids(req.get("dataset_ids"), current_user.id)
+            kb_ids = await _validate_dataset_ids(req.get("dataset_ids"), current_user.id)
             if isinstance(kb_ids, str):
                 return get_data_error_result(message=kb_ids)
             req["kb_ids"] = kb_ids
             req.pop("dataset_ids", None)
 
         if "llm_id" in req:
-            err = _validate_llm_id(req.get("llm_id"), current_user.id, req.get("llm_setting"))
+            err = await _validate_llm_id(req.get("llm_id"), current_user.id, req.get("llm_setting"))
             if err:
                 return get_data_error_result(message=err)
 
         if "rerank_id" in req:
-            err = _validate_rerank_id(req.get("rerank_id"), current_user.id)
+            err = await _validate_rerank_id(req.get("rerank_id"), current_user.id)
             if err:
                 return get_data_error_result(message=err)
 
@@ -574,8 +581,8 @@ async def patch_chat(chat_id):
 
 @manager.route("/chats/<chat_id>", methods=["DELETE"])  # noqa: F821
 @login_required
-def delete_chat(chat_id):
-    if not _ensure_owned_chat(chat_id):
+async def delete_chat(chat_id):
+    if not await _ensure_owned_chat(chat_id):
         return get_json_result(
             data=False, message="No authorization.", code=RetCode.AUTHENTICATION_ERROR
         )
@@ -623,7 +630,7 @@ async def bulk_delete_chats():
     unique_ids, duplicate_messages = check_duplicate_ids(ids, "chat")
 
     for chat_id in unique_ids:
-        if not _ensure_owned_chat(chat_id):
+        if not await _ensure_owned_chat(chat_id):
             errors.append(f"Chat({chat_id}) not found.")
             continue
         success_count += DialogService.update_by_id(chat_id, {"status": StatusEnum.INVALID.value})
@@ -643,7 +650,7 @@ async def bulk_delete_chats():
 @manager.route("/chats/<chat_id>/sessions", methods=["POST"])  # noqa: F821
 @login_required
 async def create_session(chat_id):
-    if not _ensure_owned_chat(chat_id):
+    if not await _ensure_owned_chat(chat_id):
         return get_json_result(data=False, message="No authorization.", code=RetCode.AUTHENTICATION_ERROR)
     try:
         req = await get_request_json()
@@ -673,9 +680,9 @@ async def create_session(chat_id):
 
 @manager.route("/chats/<chat_id>/sessions", methods=["GET"])  # noqa: F821
 @login_required
-def list_sessions(chat_id):
+async def list_sessions(chat_id):
     try:
-        if not _ensure_owned_chat(chat_id):
+        if not await _ensure_owned_chat(chat_id):
             return get_json_result(
                 data=False,
                 message="No authorization.",
@@ -701,15 +708,15 @@ def list_sessions(chat_id):
 @manager.route("/chats/<chat_id>/sessions/<session_id>", methods=["GET"])  # noqa: F821
 @login_required
 async def get_session(chat_id, session_id):
-    if not _ensure_owned_chat(chat_id):
+    if not await _ensure_owned_chat(chat_id):
         return get_json_result(data=False, message="No authorization.", code=RetCode.AUTHENTICATION_ERROR)
     try:
-        ok, conv = ConversationService.get_by_id(session_id)
+        ok, conv = await thread_pool_exec(ConversationService.get_by_id, session_id)
         if not ok:
             return get_data_error_result(message="Session not found!")
         if conv.dialog_id != chat_id:
             return get_data_error_result(message="Session does not belong to this chat!")
-        dialog = _ensure_owned_chat(chat_id)
+        dialog = await _ensure_owned_chat(chat_id)
         avatar = dialog[0].icon if dialog else ""
         for ref in conv.reference:
             if isinstance(ref, list):
@@ -725,7 +732,7 @@ async def get_session(chat_id, session_id):
 @manager.route("/chats/<chat_id>/sessions/<session_id>", methods=["PATCH"])  # noqa: F821
 @login_required
 async def update_session(chat_id, session_id):
-    if not _ensure_owned_chat(chat_id):
+    if not await _ensure_owned_chat(chat_id):
         return get_json_result(data=False, message="No authorization.", code=RetCode.AUTHENTICATION_ERROR)
     try:
         req = await get_request_json()
@@ -754,7 +761,7 @@ async def update_session(chat_id, session_id):
 @manager.route("/chats/<chat_id>/sessions", methods=["DELETE"])  # noqa: F821
 @login_required
 async def delete_sessions(chat_id):
-    if not _ensure_owned_chat(chat_id):
+    if not await _ensure_owned_chat(chat_id):
         return get_json_result(data=False, message="No authorization.", code=RetCode.AUTHENTICATION_ERROR)
     try:
         req = await get_request_json()
@@ -794,7 +801,7 @@ async def delete_sessions(chat_id):
 @manager.route("/chats/<chat_id>/sessions/<session_id>/messages/<msg_id>", methods=["DELETE"])  # noqa: F821
 @login_required
 async def delete_session_message(chat_id, session_id, msg_id):
-    if not _ensure_owned_chat(chat_id):
+    if not await _ensure_owned_chat(chat_id):
         return get_json_result(data=False, message="No authorization.", code=RetCode.AUTHENTICATION_ERROR)
     try:
         ok, conv = ConversationService.get_by_id(session_id)
@@ -818,28 +825,66 @@ async def delete_session_message(chat_id, session_id, msg_id):
 @manager.route("/chats/<chat_id>/sessions/<session_id>/messages/<msg_id>/feedback", methods=["PUT"])  # noqa: F821
 @login_required
 async def update_message_feedback(chat_id, session_id, msg_id):
-    if not _ensure_owned_chat(chat_id):
+    owned = await _ensure_owned_chat(chat_id)
+    if not owned:
         return get_json_result(data=False, message="No authorization.", code=RetCode.AUTHENTICATION_ERROR)
     try:
         req = await get_request_json()
         ok, conv = ConversationService.get_by_id(session_id)
         if not ok or conv.dialog_id != chat_id:
             return get_data_error_result(message="Session not found!")
-        up_down = req.get("thumbup")
+        thumb_raw = req.get("thumbup")
+        if not isinstance(thumb_raw, bool):
+            return get_data_error_result(message="thumbup must be a boolean")
         feedback = req.get("feedback", "")
-        conv = conv.to_dict()
-        for msg in conv["message"]:
+        conv_dict = conv.to_dict()
+        message_index = None
+        apply_chunk_feedback = False
+        prior_thumb = None
+        for i, msg in enumerate(conv_dict["message"]):
             if msg_id == msg.get("id", "") and msg.get("role", "") == "assistant":
-                if up_down:
+                prior_thumb = msg.get("thumbup")
+                if thumb_raw is True:
                     msg["thumbup"] = True
                     msg.pop("feedback", None)
+                    apply_chunk_feedback = prior_thumb is not True
                 else:
                     msg["thumbup"] = False
                     if feedback:
                         msg["feedback"] = feedback
+                    apply_chunk_feedback = prior_thumb is not False
+                message_index = i
                 break
-        ConversationService.update_by_id(conv["id"], conv)
-        return get_json_result(data=_build_session_response(conv))
+
+        if message_index is not None and apply_chunk_feedback:
+            try:
+                ref_index = (message_index - 1) // 2
+                if 0 <= ref_index < len(conv_dict.get("reference", [])):
+                    reference = conv_dict["reference"][ref_index]
+                    if reference:
+                        if isinstance(prior_thumb, bool) and prior_thumb != thumb_raw:
+                            await thread_pool_exec(
+                                ChunkFeedbackService.apply_feedback,
+                                tenant_id=current_user.id,
+                                reference=reference,
+                                is_positive=not prior_thumb,
+                            )
+                        feedback_result = await thread_pool_exec(
+                            ChunkFeedbackService.apply_feedback,
+                            tenant_id=current_user.id,
+                            reference=reference,
+                            is_positive=thumb_raw is True,
+                        )
+                        logging.debug(
+                            "Chunk feedback applied: %s succeeded, %s failed",
+                            feedback_result["success_count"],
+                            feedback_result["fail_count"],
+                        )
+            except Exception as e:
+                logging.warning("Failed to apply chunk feedback: %s", e)
+
+        await thread_pool_exec(ConversationService.update_by_id, conv_dict["id"], conv_dict)
+        return get_json_result(data=_build_session_response(conv_dict))
     except Exception as ex:
         return server_error_response(ex)
 
@@ -1016,23 +1061,23 @@ async def session_completion(chat_id_in_arg=""):
             return get_data_error_result(message="`chat_id` is required when `session_id` is provided.")
 
         if chat_id:
-            if not _ensure_owned_chat(chat_id):
+            if not await _ensure_owned_chat(chat_id):
                 return get_json_result(
                     data=False,
                     message="No authorization.",
                     code=RetCode.AUTHENTICATION_ERROR,
                 )
-            e, dia = DialogService.get_by_id(chat_id)
+            e, dia = await thread_pool_exec(DialogService.get_by_id, chat_id)
             if not e:
                 return get_data_error_result(message="Chat not found!")
             if session_id:
-                e, conv = ConversationService.get_by_id(session_id)
+                e, conv = await thread_pool_exec(ConversationService.get_by_id, session_id)
                 if not e:
                     return get_data_error_result(message="Session not found!")
                 if conv.dialog_id != chat_id:
                     return get_data_error_result(message="Session does not belong to this chat!")
             else:
-                conv = _create_session_for_completion(chat_id, dia, req.get("user_id", current_user.id))
+                conv = await _create_session_for_completion(chat_id, dia, req.get("user_id", current_user.id))
                 session_id = conv.id
             conv.message = deepcopy(req["messages"])
         else:
@@ -1048,7 +1093,7 @@ async def session_completion(chat_id_in_arg=""):
             conv.reference.append({"chunks": [], "doc_aggs": []})
 
         if chat_model_id:
-            if not TenantLLMService.get_api_key(tenant_id=dia.tenant_id, model_name=chat_model_id):
+            if not await thread_pool_exec(TenantLLMService.get_api_key, tenant_id=dia.tenant_id, model_name=chat_model_id):
                 return get_data_error_result(message=f"Cannot use specified model {chat_model_id}.")
             dia.llm_id = chat_model_id
             dia.llm_setting = chat_model_config
@@ -1068,7 +1113,7 @@ async def session_completion(chat_id_in_arg=""):
                     ans = _format_answer(ans)
                     yield "data:" + json.dumps({"code": 0, "message": "", "data": ans}, ensure_ascii=False) + "\n\n"
                 if conv is not None:
-                    ConversationService.update_by_id(conv.id, conv.to_dict())
+                    await thread_pool_exec(ConversationService.update_by_id, conv.id, conv.to_dict())
             except Exception as ex:
                 logging.exception(ex)
                 yield "data:" + json.dumps({"code": 500, "message": str(ex), "data": {"answer": "**ERROR**: " + str(ex), "reference": []}}, ensure_ascii=False) + "\n\n"
@@ -1086,7 +1131,7 @@ async def session_completion(chat_id_in_arg=""):
         async for ans in async_chat(dia, msg, **req):
             answer = _format_answer(ans)
             if conv is not None:
-                ConversationService.update_by_id(conv.id, conv.to_dict())
+                await thread_pool_exec(ConversationService.update_by_id, conv.id, conv.to_dict())
             break
         return get_json_result(data=answer)
     except Exception as ex:

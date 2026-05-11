@@ -1,5 +1,5 @@
 #
-#  Copyright 2024 The InfiniFlow Authors. All Rights Reserved.
+#  Copyright 2026 The InfiniFlow Authors. All Rights Reserved.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -11,37 +11,34 @@
 #  distributed under the License is distributed on an "AS IS" BASIS,
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
-#  limitations under the License
+#  limitations under the License.
 #
+
+import json
 import logging
 from datetime import datetime
-import json
+from timeit import default_timer as timer
+
+from quart import jsonify
 
 from api.apps import login_required, current_user
-
+from api.utils.api_utils import get_json_result, get_data_error_result, server_error_response, generate_confirmation_token
+from api.utils.health_utils import run_health_checks, get_oceanbase_status
+from common.versions import get_ragflow_version
+from common.time_utils import current_timestamp, datetime_format
 from api.db.db_models import APIToken
 from api.db.services.api_service import APITokenService
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.user_service import UserTenantService
-from api.utils.api_utils import (
-    get_json_result,
-    get_data_error_result,
-    server_error_response,
-    generate_confirmation_token,
-)
-from common.versions import get_ragflow_version
-from common.time_utils import current_timestamp, datetime_format
 from common.log_utils import get_log_levels, set_log_level
-from timeit import default_timer as timer
-
-from rag.utils.redis_conn import REDIS_CONN
-from quart import jsonify
-from api.utils.health_utils import run_health_checks, get_oceanbase_status
 from common import settings
+from rag.utils.redis_conn import REDIS_CONN
 
+@manager.route("/system/ping", methods=["GET"])  # noqa: F821
+async def ping():
+    return "pong", 200
 
-@manager.route("/version", methods=["GET"])  # noqa: F821
-@login_required
+@manager.route("/system/version", methods=["GET"])  # noqa: F821
 def version():
     """
     Get the current version of the application.
@@ -63,7 +60,7 @@ def version():
     return get_json_result(data=get_ragflow_version())
 
 
-@manager.route("/status", methods=["GET"])  # noqa: F821
+@manager.route("/system/status", methods=["GET"])  # noqa: F821
 @login_required
 def status():
     """
@@ -172,18 +169,7 @@ def status():
     return get_json_result(data=res)
 
 
-@manager.route("/healthz", methods=["GET"])  # noqa: F821
-def healthz():
-    result, all_ok = run_health_checks()
-    return jsonify(result), (200 if all_ok else 500)
-
-
-@manager.route("/ping", methods=["GET"])  # noqa: F821
-async def ping():
-    return "pong", 200
-
-
-@manager.route("/oceanbase/status", methods=["GET"])  # noqa: F821
+@manager.route("/system/oceanbase/status", methods=["GET"])  # noqa: F821
 @login_required
 def oceanbase_status():
     """
@@ -219,7 +205,82 @@ def oceanbase_status():
         )
 
 
-@manager.route("/new_token", methods=["POST"])  # noqa: F821
+@manager.route("/system/config", methods=["GET"])  # noqa: F821
+def get_config():
+    """
+    Get system configuration.
+    ---
+    tags:
+        - System
+    responses:
+        200:
+            description: Return system configuration
+            schema:
+                type: object
+                properties:
+                    registerEnable:
+                        type: integer 0 means disabled, 1 means enabled
+                        description: Whether user registration is enabled
+    """
+    return get_json_result(data={
+        "registerEnabled": settings.REGISTER_ENABLED,
+        "disablePasswordLogin": settings.DISABLE_PASSWORD_LOGIN,
+    })
+
+@manager.route("/system/healthz", methods=["GET"])  # noqa: F821
+def healthz():
+    result, all_ok = run_health_checks()
+    return jsonify(result), (200 if all_ok else 500)
+
+@manager.route("/system/tokens", methods=["GET"])  # noqa: F821
+@login_required
+def token_list():
+    """
+    List all API tokens for the current user.
+    ---
+    tags:
+      - API Tokens
+    security:
+      - ApiKeyAuth: []
+    responses:
+      200:
+        description: List of API tokens.
+        schema:
+          type: object
+          properties:
+            tokens:
+              type: array
+              items:
+                type: object
+                properties:
+                  token:
+                    type: string
+                    description: The API token.
+                  name:
+                    type: string
+                    description: Name of the token.
+                  create_time:
+                    type: string
+                    description: Token creation time.
+    """
+    try:
+        tenants = UserTenantService.query(user_id=current_user.id)
+        if not tenants:
+            return get_data_error_result(message="Tenant not found!")
+
+        tenant_id = [tenant for tenant in tenants if tenant.role == "owner"][0].tenant_id
+        objs = APITokenService.query(tenant_id=tenant_id)
+        objs = [o.to_dict() for o in objs]
+        for o in objs:
+            if not o["beta"]:
+                o["beta"] = generate_confirmation_token().replace("ragflow-", "")[:32]
+                APITokenService.filter_update([APIToken.tenant_id == tenant_id, APIToken.token == o["token"]], o)
+        return get_json_result(data=objs)
+    except Exception as e:
+        return server_error_response(e)
+
+
+@manager.route("/system/tokens", methods=["POST"])  # noqa: F821
 @login_required
 def new_token():
     """
@@ -269,55 +330,7 @@ def new_token():
         return server_error_response(e)
 
 
-@manager.route("/token_list", methods=["GET"])  # noqa: F821
-@login_required
-def token_list():
-    """
-    List all API tokens for the current user.
-    ---
-    tags:
-      - API Tokens
-    security:
-      - ApiKeyAuth: []
-    responses:
-      200:
-        description: List of API tokens.
-        schema:
-          type: object
-          properties:
-            tokens:
-              type: array
-              items:
-                type: object
-                properties:
-                  token:
-                    type: string
-                    description: The API token.
-                  name:
-                    type: string
-                    description: Name of the token.
-                  create_time:
-                    type: string
-                    description: Token creation time.
-    """
-    try:
-        tenants = UserTenantService.query(user_id=current_user.id)
-        if not tenants:
-            return get_data_error_result(message="Tenant not found!")
-
-        tenant_id = [tenant for tenant in tenants if tenant.role == "owner"][0].tenant_id
-        objs = APITokenService.query(tenant_id=tenant_id)
-        objs = [o.to_dict() for o in objs]
-        for o in objs:
-            if not o["beta"]:
-                o["beta"] = generate_confirmation_token().replace("ragflow-", "")[:32]
-                APITokenService.filter_update([APIToken.tenant_id == tenant_id, APIToken.token == o["token"]], o)
-        return get_json_result(data=objs)
-    except Exception as e:
-        return server_error_response(e)
-
-
-@manager.route("/token/<token>", methods=["DELETE"])  # noqa: F821
+@manager.route("/system/tokens/<token>", methods=["DELETE"])  # noqa: F821
 @login_required
 def rm(token):
     """
@@ -355,30 +368,7 @@ def rm(token):
         return server_error_response(e)
 
 
-@manager.route("/config", methods=["GET"])  # noqa: F821
-def get_config():
-    """
-    Get system configuration.
-    ---
-    tags:
-        - System
-    responses:
-        200:
-            description: Return system configuration
-            schema:
-                type: object
-                properties:
-                    registerEnable:
-                        type: integer 0 means disabled, 1 means enabled
-                        description: Whether user registration is enabled
-    """
-    return get_json_result(data={
-        "registerEnabled": settings.REGISTER_ENABLED,
-        "disablePasswordLogin": settings.DISABLE_PASSWORD_LOGIN,
-    })
-
-
-@manager.route("/log_levels", methods=["GET"])  # noqa: F821
+@manager.route("/system/config/log", methods=["GET"])  # noqa: F821
 @login_required
 async def get_logger_levels():
     """
@@ -393,7 +383,7 @@ async def get_logger_levels():
     return get_json_result(data=get_log_levels())
 
 
-@manager.route("/log_levels", methods=["PUT"])  # noqa: F821
+@manager.route("/system/config/log", methods=["PUT"])  # noqa: F821
 @login_required
 async def set_logger_level():
     """
