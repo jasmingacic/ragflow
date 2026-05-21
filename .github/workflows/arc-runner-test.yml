@@ -83,21 +83,17 @@ jobs:
           sed -i 's#--mount=type=cache,id=ragflow_npm,target=/root/.npm,sharing=locked ##g' Dockerfile
           sed -i 's#--mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked ##g' Dockerfile
           sed -i 's#--mount=type=cache,id=ragflow_uv,target=/root/.cache/uv,sharing=locked ##g' Dockerfile
-          sed -i 's#cd web && npm install && npm run build#echo "Frontend pre-built, skipping"#g' Dockerfile
-          sed -i 's|https://mirrors.aliyun.com/pypi/simple|https://pypi.org/simple|g' pyproject.toml
+          # The Dockerfile's frontend build is a multi-line RUN block with
+          # NODE_OPTIONS / VITE_* env vars interleaved. A simple `cd web &&
+          # npm install && npm run build` sed never matches the real text,
+          # so the in-container build was still running — and under QEMU
+          # arm64 emulation it hits the long-standing npm/Rollup optional-
+          # deps bug (https://github.com/npm/cli/issues/4828). Use perl with
+          # multi-line slurp mode to nuke the whole RUN block; the
+          # host-built frontend (web/dist) ships in via `COPY web web`.
+          perl -i -0pe 's|RUN \\\n    cd web.*?npm run build|RUN echo "Frontend pre-built, skipping"|s' Dockerfile
 
-          # npm + Rollup 4 ship platform-specific native binaries as optional
-          # deps. When building arm64 under QEMU, npm install honoring the
-          # existing lockfile sometimes skips @rollup/rollup-linux-arm64-gnu
-          # (it was resolved on the host arch when the lockfile was created),
-          # then the build immediately needs it and crashes:
-          #   Error: Cannot find module '@rollup/rollup-linux-arm64-gnu'
-          # Dropping the lockfile forces npm to re-resolve all optional deps
-          # for the actual target platform on each build. Slightly less
-          # reproducible than a frozen lockfile install, but multi-arch
-          # builds can't have a single lockfile that satisfies both arches
-          # of native deps anyway.
-          rm -f web/package-lock.json
+          sed -i 's|https://mirrors.aliyun.com/pypi/simple|https://pypi.org/simple|g' pyproject.toml
 
       - name: Set up QEMU
         # Lets buildx cross-build the non-native arch (arm64 from amd64 runners
