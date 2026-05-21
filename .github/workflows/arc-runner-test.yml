@@ -86,6 +86,11 @@ jobs:
           sed -i 's#cd web && npm install && npm run build#echo "Frontend pre-built, skipping"#g' Dockerfile
           sed -i 's|https://mirrors.aliyun.com/pypi/simple|https://pypi.org/simple|g' pyproject.toml
 
+      - name: Set up QEMU
+        # Lets buildx cross-build the non-native arch (arm64 from amd64 runners
+        # and vice versa) via userspace emulation.
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -111,6 +116,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           no-cache: true
           tags: ${{ steps.meta.outputs.tags }}
