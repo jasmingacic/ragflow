@@ -86,6 +86,19 @@ jobs:
           sed -i 's#cd web && npm install && npm run build#echo "Frontend pre-built, skipping"#g' Dockerfile
           sed -i 's|https://mirrors.aliyun.com/pypi/simple|https://pypi.org/simple|g' pyproject.toml
 
+          # npm + Rollup 4 ship platform-specific native binaries as optional
+          # deps. When building arm64 under QEMU, npm install honoring the
+          # existing lockfile sometimes skips @rollup/rollup-linux-arm64-gnu
+          # (it was resolved on the host arch when the lockfile was created),
+          # then the build immediately needs it and crashes:
+          #   Error: Cannot find module '@rollup/rollup-linux-arm64-gnu'
+          # Dropping the lockfile forces npm to re-resolve all optional deps
+          # for the actual target platform on each build. Slightly less
+          # reproducible than a frozen lockfile install, but multi-arch
+          # builds can't have a single lockfile that satisfies both arches
+          # of native deps anyway.
+          rm -f web/package-lock.json
+
       - name: Set up QEMU
         # Lets buildx cross-build the non-native arch (arm64 from amd64 runners
         # and vice versa) via userspace emulation.
