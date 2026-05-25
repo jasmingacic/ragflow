@@ -36,13 +36,13 @@ jobs:
             git checkout --ours pyproject.toml uv.lock 2>/dev/null || true
 
             # For workflows we added, keep ours
-            git checkout --ours .github/workflows/arc-runner-test.yml 2>/dev/null || true
+            git checkout --ours .github/workflows/build-image.yml 2>/dev/null || true
             git checkout --ours .github/workflows/release-build.yml 2>/dev/null || true
             git checkout --ours .github/workflows/sync-upstream.yml 2>/dev/null || true
 
             # Stage the files we resolved as "ours" so they're no longer in the conflict list
             git add helm/values.yaml helm/Chart.yaml pyproject.toml uv.lock \
-              .github/workflows/arc-runner-test.yml \
+              .github/workflows/build-image.yml \
               .github/workflows/release-build.yml \
               .github/workflows/sync-upstream.yml 2>/dev/null || true
 
