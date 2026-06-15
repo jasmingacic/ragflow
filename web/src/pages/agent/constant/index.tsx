@@ -782,6 +782,7 @@ export const NoDebugOperatorsList = [
   Operator.TitleChunker,
   Operator.Extractor,
   Operator.Tool,
+  Operator.Loop,
 ];
 
 export const NoCopyOperatorsList = [
