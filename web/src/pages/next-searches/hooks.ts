@@ -294,9 +294,6 @@ export const useUpdateSearch = () => {
         queryKey: ['searchDetail', variables.search_id],
       });
     },
-    onError: (error) => {
-      message.error(t('message.error', { error: error.message }));
-    },
   });
 
   const updateSearch = useCallback(
@@ -342,11 +339,10 @@ export const useRenameSearch = () => {
       setLoading(true);
       if (search?.id) {
         try {
-          const reponse = await searchService.getSearchDetail({
+          const response = await searchService.getSearchDetail({
             search_id: search?.id,
           });
-          const detail = reponse.data?.data;
-          console.log('detail-->', detail);
+          const detail = response.data?.data;
 
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
           const { id, created_by, update_time, ...searchDataTemp } = detail;
