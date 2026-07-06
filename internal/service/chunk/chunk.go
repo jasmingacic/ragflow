@@ -77,6 +77,17 @@ type chunkImageMergeLock struct {
 	refs int
 }
 
+func searchConfigMap(value interface{}) (map[string]interface{}, bool) {
+	switch typed := value.(type) {
+	case entity.JSONMap:
+		return map[string]interface{}(typed), true
+	case map[string]interface{}:
+		return typed, true
+	default:
+		return nil, false
+	}
+}
+
 // ChunkService chunk service
 type ChunkService struct {
 	docEngine      engine.DocEngine
@@ -97,6 +108,7 @@ type ChunkService struct {
 	deleteTasksByDocIDsFunc       func([]string) (int64, error)
 	getEmbeddingModelFunc         func(string, string) (*models.EmbeddingModel, error)
 	incrementChunkStatsFunc       func(string, string, int64, int64, float64) error
+	decrementChunkStatsFunc       func(string, string, int64, int64, float64) error
 	storeChunkImageFunc           func(string, string, []byte) error
 	tokenizeFunc                  func(string) (string, error)
 	fineGrainedTokenizeFunc       func(string) (string, error)
@@ -200,9 +212,9 @@ func (s *ChunkService) RetrievalTest(req *service.RetrievalTestRequest, userID s
 
 	// Check if all kbs have the same embedding model
 	if len(kbRecords) > 1 {
-		firstEmbdID := kbRecords[0].EmbdID
+		firstEmbeddingKey := knowledgebaseEmbeddingKey(kbRecords[0], tenantIDs[0])
 		for i := 1; i < len(kbRecords); i++ {
-			if kbRecords[i].EmbdID != firstEmbdID {
+			if knowledgebaseEmbeddingKey(kbRecords[i], tenantIDs[i]) != firstEmbeddingKey {
 				return nil, fmt.Errorf("cannot retrieve across datasets with different embedding models")
 			}
 		}
@@ -218,8 +230,8 @@ func (s *ChunkService) RetrievalTest(req *service.RetrievalTestRequest, userID s
 		searchDetail, err := s.searchService.GetDetail(*req.SearchID)
 		if err != nil {
 			common.Warn("Failed to get search detail for search_id, proceeding without it", zap.String("searchID", *req.SearchID), zap.Error(err))
-		} else if searchConfig, ok := searchDetail["search_config"].(entity.JSONMap); ok && searchConfig != nil {
-			if searchMetaFilter, ok := searchConfig["meta_data_filter"].(map[string]interface{}); ok {
+		} else if searchConfig, ok := searchConfigMap(searchDetail["search_config"]); ok && searchConfig != nil {
+			if searchMetaFilter, ok := searchConfigMap(searchConfig["meta_data_filter"]); ok {
 				filter = searchMetaFilter
 			}
 			chatID, _ = searchConfig["chat_id"].(string)
@@ -345,48 +357,47 @@ func (s *ChunkService) RetrievalTest(req *service.RetrievalTestRequest, userID s
 	labels := metadataSvc.LabelQuestion(modifiedQuestion, kbRecords)
 	common.Debug("LabelQuestion result", zap.Any("labels", labels))
 
-	// Determine embedding model
+	// Determine embedding model.
 	modelProviderSvc := service.NewModelProviderService()
-	var embdID string
-	var tenantLLM *entity.TenantLLM
 	var embeddingModel *models.EmbeddingModel
+	var embdID string
 	if kbRecords[0].TenantEmbdID != nil && *kbRecords[0].TenantEmbdID > 0 {
-		tenantLLM, embdID, err = dao.LookupTenantLLMByID(dao.NewTenantLLMDAO(), *kbRecords[0].TenantEmbdID)
+		_, embdID, err = dao.LookupTenantLLMByID(dao.NewTenantLLMDAO(), *kbRecords[0].TenantEmbdID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get embedding model by tenant_embd_id: %w", err)
 		}
+		driver, modelName, apiConfig, maxTokens, getErr := modelProviderSvc.GetModelConfigFromProviderInstance(tenantIDs[0], entity.ModelTypeEmbedding, embdID)
+		if getErr != nil {
+			return nil, fmt.Errorf("failed to get embedding model by tenant_embd_id: %w", getErr)
+		}
+		embeddingModel = models.NewEmbeddingModel(driver, &modelName, apiConfig, maxTokens)
 	} else if kbRecords[0].EmbdID != "" {
-		if strings.Contains(kbRecords[0].EmbdID, "@") {
-			driver, modelName, apiConfig, maxTokens, embErr := modelProviderSvc.GetModelConfigFromProviderInstance(tenantIDs[0], entity.ModelTypeEmbedding, kbRecords[0].EmbdID)
-			if embErr != nil {
-				return nil, fmt.Errorf("failed to get embedding model by embd_id: %w", embErr)
-			}
-			embeddingModel = models.NewEmbeddingModel(driver, &modelName, apiConfig, maxTokens)
-			embdID = kbRecords[0].EmbdID
-		} else {
-			tenantLLM, embdID, err = dao.LookupTenantLLMByName(dao.NewTenantLLMDAO(), tenantIDs[0], kbRecords[0].EmbdID, entity.ModelTypeEmbedding)
+		embdID = kbRecords[0].EmbdID
+		driver, modelName, apiConfig, maxTokens, getErr := modelProviderSvc.GetModelConfigFromProviderInstance(tenantIDs[0], entity.ModelTypeEmbedding, embdID)
+		if getErr != nil {
+			_, embdID, err = dao.LookupTenantLLMByName(dao.NewTenantLLMDAO(), tenantIDs[0], kbRecords[0].EmbdID, entity.ModelTypeEmbedding)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get embedding model by embd_id: %w", err)
+				return nil, fmt.Errorf("failed to get embedding model by embd_id: %w", getErr)
+			}
+			driver, modelName, apiConfig, maxTokens, getErr = modelProviderSvc.GetModelConfigFromProviderInstance(tenantIDs[0], entity.ModelTypeEmbedding, embdID)
+			if getErr != nil {
+				return nil, fmt.Errorf("failed to get embedding model by embd_id: %w", getErr)
 			}
 		}
+		embeddingModel = models.NewEmbeddingModel(driver, &modelName, apiConfig, maxTokens)
 	} else {
-		tenantLLM, err = dao.NewTenantLLMDAO().GetByTenantAndType(tenantIDs[0], entity.ModelTypeEmbedding)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get tenant default embedding model: %w", err)
+		driver, modelName, apiConfig, maxTokens, getErr := modelProviderSvc.GetTenantDefaultModelByType(tenantIDs[0], entity.ModelTypeEmbedding)
+		if getErr != nil {
+			return nil, fmt.Errorf("failed to get tenant default embedding model: %w", getErr)
 		}
-		if tenantLLM == nil || tenantLLM.LLMName == nil || *tenantLLM.LLMName == "" {
-			return nil, fmt.Errorf("no default embedding model found for tenant %s", tenantIDs[0])
-		}
-		embdID = fmt.Sprintf("%s@%s", *tenantLLM.LLMName, tenantLLM.LLMFactory)
+		embeddingModel = models.NewEmbeddingModel(driver, &modelName, apiConfig, maxTokens)
+		embdID = fmt.Sprintf("%s@default", modelName)
 	}
 
-	// Get embedding model for the tenant
 	if embeddingModel == nil {
-		embeddingModel, err = modelProviderSvc.GetEmbeddingModel(tenantIDs[0], embdID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get embedding model: %w", err)
-		}
+		return nil, fmt.Errorf("no embedding model found for tenant %s", tenantIDs[0])
 	}
+
 	common.Info("Fetched embedding model for retrieval",
 		zap.String("tenantID", tenantIDs[0]),
 		zap.String("embdID", embdID))
@@ -405,6 +416,12 @@ func (s *ChunkService) RetrievalTest(req *service.RetrievalTestRequest, userID s
 		}
 	} else if req.RerankID != nil && *req.RerankID != "" {
 		rerankCompositeName = *req.RerankID
+		if _, _, _, _, getErr := modelProviderSvc.GetModelConfigFromProviderInstance(tenantIDs[0], entity.ModelTypeRerank, rerankCompositeName); getErr != nil {
+			_, rerankCompositeName, err = dao.LookupTenantLLMByName(dao.NewTenantLLMDAO(), tenantIDs[0], *req.RerankID, entity.ModelTypeRerank)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get rerank model by rerank_id: %w", getErr)
+			}
+		}
 	}
 	if rerankCompositeName != "" {
 		driver, mdlName, apiConfig, _, getErr := modelProviderSvc.GetModelConfigFromProviderInstance(tenantIDs[0], entity.ModelTypeRerank, rerankCompositeName)
@@ -464,6 +481,16 @@ func (s *ChunkService) RetrievalTest(req *service.RetrievalTestRequest, userID s
 		Labels:  &labels,
 		Total:   retrievalResult.Total,
 	}, nil
+}
+
+func knowledgebaseEmbeddingKey(kb *entity.Knowledgebase, tenantID string) string {
+	if kb.TenantEmbdID != nil && *kb.TenantEmbdID > 0 {
+		return fmt.Sprintf("tenant:%d", *kb.TenantEmbdID)
+	}
+	if kb.EmbdID == "" {
+		return fmt.Sprintf("default:%s", tenantID)
+	}
+	return fmt.Sprintf("embd:%s", kb.EmbdID)
 }
 
 // hydrateChunkVectors replaces zero (placeholder) vectors in chunks with real
@@ -1655,7 +1682,11 @@ func (s *ChunkService) UpdateChunk(req *service.UpdateChunkRequest, userID strin
 
 	// Tag features
 	if req.TagFeas != nil {
-		d["tag_feas"] = req.TagFeas
+		tagFeas, err := validateTagFeatures(req.TagFeas)
+		if err != nil {
+			return updateChunkError{code: common.CodeArgumentError, message: "`tag_feas` " + err.Error()}
+		}
+		d["tag_feas"] = tagFeas
 	}
 
 	// Always include id
@@ -1738,6 +1769,12 @@ func (s *ChunkService) RemoveChunks(req *service.RemoveChunksRequest, userID str
 	deletedCount, err := s.docEngine.DeleteChunks(ctx, condition, indexName, doc.KbID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to delete chunks: %w", err)
+	}
+
+	if deletedCount > 0 {
+		if err := s.decrementChunkStats(req.DocID, doc.KbID, 0, deletedCount, 0); err != nil {
+			return deletedCount, fmt.Errorf("failed to update chunk stats: %w", err)
+		}
 	}
 
 	return deletedCount, nil
@@ -1899,6 +1936,19 @@ type addChunkError struct {
 	message string
 }
 
+type updateChunkError struct {
+	code    common.ErrorCode
+	message string
+}
+
+func (e updateChunkError) Error() string {
+	return e.message
+}
+
+func (e updateChunkError) Code() common.ErrorCode {
+	return e.code
+}
+
 func (e addChunkError) Error() string {
 	return e.message
 }
@@ -1920,27 +1970,42 @@ func validateTagFeatures(raw interface{}) (map[string]float64, error) {
 		}
 		switch typed := value.(type) {
 		case float64:
-			if math.IsNaN(typed) || math.IsInf(typed, 0) {
-				return nil, fmt.Errorf("values must be finite numbers")
+			if math.IsNaN(typed) || math.IsInf(typed, 0) || typed <= 0 {
+				return nil, fmt.Errorf("values must be finite numbers greater than 0")
 			}
 			cleaned[key] = typed
 		case float32:
-			if math.IsNaN(float64(typed)) || math.IsInf(float64(typed), 0) {
-				return nil, fmt.Errorf("values must be finite numbers")
+			if math.IsNaN(float64(typed)) || math.IsInf(float64(typed), 0) || typed <= 0 {
+				return nil, fmt.Errorf("values must be finite numbers greater than 0")
 			}
 			cleaned[key] = float64(typed)
 		case int:
+			if typed <= 0 {
+				return nil, fmt.Errorf("values must be finite numbers greater than 0")
+			}
 			cleaned[key] = float64(typed)
 		case int8:
+			if typed <= 0 {
+				return nil, fmt.Errorf("values must be finite numbers greater than 0")
+			}
 			cleaned[key] = float64(typed)
 		case int16:
+			if typed <= 0 {
+				return nil, fmt.Errorf("values must be finite numbers greater than 0")
+			}
 			cleaned[key] = float64(typed)
 		case int32:
+			if typed <= 0 {
+				return nil, fmt.Errorf("values must be finite numbers greater than 0")
+			}
 			cleaned[key] = float64(typed)
 		case int64:
+			if typed <= 0 {
+				return nil, fmt.Errorf("values must be finite numbers greater than 0")
+			}
 			cleaned[key] = float64(typed)
 		default:
-			return nil, fmt.Errorf("values must be finite numbers")
+			return nil, fmt.Errorf("values must be finite numbers greater than 0")
 		}
 	}
 	return cleaned, nil
@@ -2034,6 +2099,41 @@ func (s *ChunkService) incrementChunkStats(docID, kbID string, tokenNum, chunkNu
 			Updates(map[string]interface{}{
 				"token_num": gorm.Expr("token_num + ?", tokenNum),
 				"chunk_num": gorm.Expr("chunk_num + ?", chunkNum),
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("knowledgebase not found")
+		}
+		return nil
+	})
+}
+
+func (s *ChunkService) decrementChunkStats(docID, kbID string, tokenNum, chunkNum int64, duration float64) error {
+	if s.decrementChunkStatsFunc != nil {
+		return s.decrementChunkStatsFunc(docID, kbID, tokenNum, chunkNum, duration)
+	}
+	return dao.DB.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&entity.Document{}).
+			Where("id = ? AND kb_id = ?", docID, kbID).
+			Updates(map[string]interface{}{
+				"token_num":        gorm.Expr("CASE WHEN token_num - ? >= 0 THEN token_num - ? ELSE 0 END", tokenNum, tokenNum),
+				"chunk_num":        gorm.Expr("CASE WHEN chunk_num - ? >= 0 THEN chunk_num - ? ELSE 0 END", chunkNum, chunkNum),
+				"process_duration": gorm.Expr("CASE WHEN process_duration + ? >= 0 THEN process_duration + ? ELSE 0 END", duration, duration),
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("document not found")
+		}
+
+		result = tx.Model(&entity.Knowledgebase{}).
+			Where("id = ?", kbID).
+			Updates(map[string]interface{}{
+				"token_num": gorm.Expr("CASE WHEN token_num - ? >= 0 THEN token_num - ? ELSE 0 END", tokenNum, tokenNum),
+				"chunk_num": gorm.Expr("CASE WHEN chunk_num - ? >= 0 THEN chunk_num - ? ELSE 0 END", chunkNum, chunkNum),
 			})
 		if result.Error != nil {
 			return result.Error

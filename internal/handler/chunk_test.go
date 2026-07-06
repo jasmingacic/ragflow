@@ -27,6 +27,19 @@ type mockChunkSvc struct {
 	stopParsingFn   func(userID, datasetID string, req service.StopParsingRequest) (*service.StopParsingResponse, common.ErrorCode, error)
 }
 
+type codedTestError struct {
+	code common.ErrorCode
+	msg  string
+}
+
+func (e codedTestError) Error() string {
+	return e.msg
+}
+
+func (e codedTestError) Code() common.ErrorCode {
+	return e.code
+}
+
 func (m *mockChunkSvc) RetrievalTest(req *service.RetrievalTestRequest, userID string) (*service.RetrievalTestResponse, error) {
 	if m.retrievalTestFn != nil {
 		return m.retrievalTestFn(req, userID)
@@ -169,6 +182,34 @@ func TestChunkHandlerListChunksMapsPathAndQuery(t *testing.T) {
 	}
 }
 
+func TestChunkHandlerListChunksMapsAvailableFalse(t *testing.T) {
+	mock := &mockChunkSvc{}
+	r, h := setupChunkHandlerWithUser("user-1", mock)
+	r.GET("/api/v1/datasets/:dataset_id/documents/:document_id/chunks", h.ListChunks)
+
+	mock.listFn = func(req *service.ListChunksRequest, userID string) (*service.ListChunksResponse, error) {
+		if userID != "user-1" {
+			t.Fatalf("userID = %q, want user-1", userID)
+		}
+		if req.AvailableInt == nil || *req.AvailableInt != 0 {
+			t.Fatalf("available_int = %v, want 0", req.AvailableInt)
+		}
+		return &service.ListChunksResponse{
+			Total:  0,
+			Chunks: []map[string]interface{}{},
+			Doc:    map[string]interface{}{"id": "doc-1"},
+		}, nil
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/datasets/kb-1/documents/doc-1/chunks?available=false", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+}
+
 func TestChunkHandlerSwitchChunksCallsService(t *testing.T) {
 	mock := &mockChunkSvc{}
 	r, h := setupChunkHandlerWithUser("user-1", mock)
@@ -244,6 +285,25 @@ func TestChunkHandlerUpdateChunkUsesPathIDs(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestChunkHandlerUpdateChunkValidationErrorIsBadRequest(t *testing.T) {
+	mock := &mockChunkSvc{}
+	r, h := setupChunkHandlerWithUser("user-1", mock)
+	r.PATCH("/api/v1/datasets/:dataset_id/documents/:document_id/chunks/:chunk_id", h.UpdateChunk)
+
+	mock.updateChunkFn = func(req *service.UpdateChunkRequest, userID string) error {
+		return codedTestError{code: common.CodeArgumentError, msg: "`tag_feas` values must be finite numbers greater than 0"}
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/datasets/kb-1/documents/doc-1/chunks/chunk-1", strings.NewReader(`{"tag_feas":{"tag":0}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 }

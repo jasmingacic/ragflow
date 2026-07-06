@@ -351,6 +351,8 @@ func parseAvailableQuery(raw string) (int, bool, error) {
 		return 0, false, nil
 	case "true", "1":
 		return 1, true, nil
+	case "false", "0":
+		return 0, true, nil
 	default:
 		return 0, true, fmt.Errorf("available must be one of: true, false, 1, 0")
 	}
@@ -717,6 +719,19 @@ func (h *ChunkHandler) UpdateChunk(c *gin.Context) {
 
 	err := h.chunkService.UpdateChunk(&req, user.ID)
 	if err != nil {
+		var coded interface {
+			Code() common.ErrorCode
+		}
+		if errors.As(err, &coded) {
+			switch coded.Code() {
+			case common.CodeArgumentError, common.CodeBadRequest, common.CodeDataError:
+				c.JSON(http.StatusBadRequest, gin.H{
+					"code":    coded.Code(),
+					"message": err.Error(),
+				})
+				return
+			}
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
 			"message": err.Error(),
