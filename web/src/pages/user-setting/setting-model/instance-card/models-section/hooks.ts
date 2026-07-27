@@ -15,7 +15,9 @@
  */
 
 import { LLMFactory } from '@/constants/llm';
+import { useQueryClient } from '@tanstack/react-query';
 import {
+  LlmKeys,
   useAddInstanceModel,
   useDeleteInstanceModels,
   useListProviderModels,
@@ -101,11 +103,7 @@ export function useResolveCreds(
     const fv = getFormValues?.() ?? {};
     return {
       apiKey: (fv.api_key as string) ?? instance?.api_key ?? '',
-      baseUrl:
-        (fv.base_url as string) ??
-        (fv.api_base as string) ??
-        instance?.base_url ??
-        '',
+      baseUrl: (fv.base_url as string) ?? instance?.base_url ?? '',
     };
   }, [getFormValues, instance]);
 
@@ -284,13 +282,20 @@ export function useModelsDerived({
     });
   }, [sourceItems, catalogFeatures]);
 
-  // Union of instance models + catalog, keyed by `name`. Catalog entries
-  // win on conflict; instance set listed first so already-added models
-  // stay at the top on the initial render.
+  // Union of instance models + catalog, keyed by `name`. Instance entries
+  // win on conflict so that editing an already-added model loads the
+  // instance-specific values (e.g. a user-customised `max_tokens`) rather
+  // than the upstream catalog defaults; catalog entries are only used to
+  // fill in models that have not been added yet. Instance set is listed
+  // first so already-added models stay at the top on the initial render.
   const models: IProviderModelItem[] = useMemo(() => {
     const byName = new Map<string, IProviderModelItem>();
     instanceItems.forEach((m) => byName.set(m.name, m));
-    catalog.forEach((m) => byName.set(m.name, m));
+    catalog.forEach((m) => {
+      if (!byName.has(m.name)) {
+        byName.set(m.name, m);
+      }
+    });
     return Array.from(byName.values());
   }, [instanceItems, catalog]);
 
@@ -385,12 +390,14 @@ interface UseModelVerifyArgs {
   providerName: string;
   resolveCreds: () => ResolvedCreds;
   instanceModels: IInstanceModel[] | undefined;
+  instance?: IProviderInstance;
 }
 
 export function useModelVerify({
   providerName,
   resolveCreds,
   instanceModels,
+  instance,
 }: UseModelVerifyArgs) {
   const { verifyProviderConnection } = useVerifyProviderConnection();
   const [verify, setVerify] = useState<Record<string, VerifyStatus>>({});
@@ -431,6 +438,7 @@ export function useModelVerify({
             max_tokens: model.max_tokens ?? 0,
           },
         ],
+        ...(instance?.id ? { instance_id: instance.id } : {}),
       });
       setVerify((prev) => ({
         ...prev,
@@ -609,14 +617,10 @@ export function useModelMutations({
 interface UseModelEditArgs {
   providerName: string;
   instanceName: string;
-  setCatalog: Dispatch<SetStateAction<IProviderModelItem[]>>;
 }
 
-export function useModelEdit({
-  providerName,
-  instanceName,
-  setCatalog,
-}: UseModelEditArgs) {
+export function useModelEdit({ providerName, instanceName }: UseModelEditArgs) {
+  const queryClient = useQueryClient();
   const customModelDialogFields = useCustomModelFields();
   const { patchInstanceModel, loading: editLoading } = usePatchInstanceModel();
   // Model currently being edited via AddCustomModelDialog (with `name`
@@ -649,17 +653,34 @@ export function useModelEdit({
     };
   }, [editingModel]);
 
-  // Persist edits to an existing model. The local `catalog` is patched so
-  // the UI reflects the new values immediately, before the cache
-  // invalidation lands.
+  // Persist edits to an existing model. The instance-models cache
+  // (the source of truth for already-added models) is patched so the
+  // UI reflects the new `max_tokens` / `model_types` / `is_tools`
+  // values immediately, before the PATCH's invalidation refetches.
+  // Updating `catalog` instead would be a no-op here: the union in
+  // `useModelsDerived` lets `instanceItems` win on name conflicts, so
+  // a catalog-only patch is invisible for any model already attached
+  // to the instance.
   const handleEditSubmit = async (item: IProviderModelItem) => {
     if (!editingModel) return;
     const targetName = editingModel.name;
 
-    setCatalog((prev) =>
-      prev.some((m) => m.name === targetName)
-        ? prev.map((m) => (m.name === targetName ? item : m))
-        : prev,
+    queryClient.setQueryData<IInstanceModel[]>(
+      LlmKeys.instanceModels(providerName, instanceName),
+      (prev) => {
+        if (!prev) return prev;
+        const idx = prev.findIndex((m) => m.name === targetName);
+        if (idx === -1) return prev;
+        const next = [...prev];
+        const existing = next[idx];
+        next[idx] = {
+          ...existing,
+          max_tokens: item.max_tokens ?? 0,
+          model_type: item.model_types ?? [],
+          is_tools: hasToolFeature(item.features),
+        };
+        return next;
+      },
     );
 
     await patchInstanceModel({
