@@ -33,6 +33,8 @@ import (
 	"ragflow/internal/engine"
 	enginetypes "ragflow/internal/engine/types"
 	"ragflow/internal/service/nlp"
+
+	"gorm.io/gorm"
 )
 
 const (
@@ -185,6 +187,25 @@ func (PromptAssembler) AssembleSystemPrompt(memoryTypes []string) string {
 	fullPrompt += fmt.Sprintf("\n**REQUIRED OUTPUT FORMAT (JSON):\n```json\n{\n%s\n}\n```\n", outputFormat)
 
 	return fullPrompt
+}
+
+// baseUserPromptTemplate is the default user prompt for memory extraction,
+// matching Python PromptAssembler.BASE_USER_PROMPT.
+const baseUserPromptTemplate = `
+**CONVERSATION:**
+{conversation}
+
+**CONVERSATION TIME:** {conversation_time}
+**CURRENT TIME:** {current_time}
+`
+
+// AssembleUserPrompt renders the default extraction user prompt with the
+// conversation content and timestamps.
+func (PromptAssembler) AssembleUserPrompt(conversation, conversationTime, currentTime string) string {
+	prompt := strings.Replace(baseUserPromptTemplate, "{conversation}", conversation, 1)
+	prompt = strings.Replace(prompt, "{conversation_time}", conversationTime, 1)
+	prompt = strings.Replace(prompt, "{current_time}", currentTime, 1)
+	return prompt
 }
 
 // getTypesToExtract filters out "raw" type and returns valid memory types
@@ -461,6 +482,7 @@ func (s *MemoryService) UpdateMemory(ctx context.Context, tenantID string, memor
 	if err != nil {
 		return nil, fmt.Errorf("memory '%s' not found", memoryID)
 	}
+	ownerTenantID := currentMemory.TenantID
 
 	if req.Name != nil {
 		memoryName := strings.TrimSpace(*req.Name)
@@ -471,7 +493,7 @@ func (s *MemoryService) UpdateMemory(ctx context.Context, tenantID string, memor
 			memoryName, err = common.DuplicateName(func(name string, tid string) bool {
 				existing, _ := s.memoryDAO.GetByNameAndTenant(ctx, dao.DB, name, tid)
 				return len(existing) > 0
-			}, memoryName, tenantID)
+			}, memoryName, ownerTenantID)
 			if err != nil {
 				return nil, err
 			}
@@ -480,7 +502,10 @@ func (s *MemoryService) UpdateMemory(ctx context.Context, tenantID string, memor
 	}
 
 	if req.Permissions != nil {
-		perm := TenantPermission(strings.ToLower(*req.Permissions))
+		perm := TenantPermission(strings.ToLower(strings.TrimSpace(*req.Permissions)))
+		if currentMemory.TenantID != tenantID && strings.ToLower(strings.TrimSpace(currentMemory.Permissions)) != string(perm) {
+			return nil, fmt.Errorf("tenant '%s' is not allowed to modify the memory's permission", tenantID)
+		}
 		if !validPermissions[perm] {
 			return nil, fmt.Errorf("unknown permission '%s'", *req.Permissions)
 		}
@@ -497,9 +522,9 @@ func (s *MemoryService) UpdateMemory(ctx context.Context, tenantID string, memor
 	if req.LLMID != nil {
 		updateDict["llm_id"] = *req.LLMID
 		if req.TenantLLMID == nil && *req.LLMID != "" {
-			resolved, err := modelProvider.ResolveModelID(ctx, tenantID, entity.ModelTypeChat, *req.LLMID)
+			resolved, err := modelProvider.ResolveModelID(ctx, ownerTenantID, entity.ModelTypeChat, *req.LLMID)
 			if err != nil {
-				slog.Warn("UpdateMemory: failed to resolve tenant LLM id", "tenant_id", tenantID, "llm_id", *req.LLMID, "err", err)
+				slog.Warn("UpdateMemory: failed to resolve tenant LLM id", "tenant_id", ownerTenantID, "llm_id", *req.LLMID, "err", err)
 			} else if resolved != "" {
 				updateDict["tenant_llm_id"] = resolved
 			}
@@ -509,9 +534,9 @@ func (s *MemoryService) UpdateMemory(ctx context.Context, tenantID string, memor
 	if req.EmbdID != nil {
 		updateDict["embd_id"] = *req.EmbdID
 		if req.TenantEmbdID == nil && *req.EmbdID != "" {
-			resolved, err := modelProvider.ResolveModelID(ctx, tenantID, entity.ModelTypeEmbedding, *req.EmbdID)
+			resolved, err := modelProvider.ResolveModelID(ctx, ownerTenantID, entity.ModelTypeEmbedding, *req.EmbdID)
 			if err != nil {
-				slog.Warn("UpdateMemory: failed to resolve tenant embedding id", "tenant_id", tenantID, "embd_id", *req.EmbdID, "err", err)
+				slog.Warn("UpdateMemory: failed to resolve tenant embedding id", "tenant_id", ownerTenantID, "embd_id", *req.EmbdID, "err", err)
 			} else if resolved != "" {
 				updateDict["tenant_embd_id"] = resolved
 			}
@@ -774,22 +799,23 @@ func sameStringSet(a, b []string) bool {
 	return true
 }
 
-// DeleteMemory deletes a memory by ID
-// It also deletes associated message indexes before removing the memory record
+// DeleteMemory deletes a memory by ID after verifying the caller's access.
+// It also deletes associated message indexes before removing the memory record.
 //
 // Parameters:
+//   - userID: The ID of the user requesting the deletion (access control)
 //   - memoryID: The ID of the memory to delete
 //
 // Returns:
-//   - error: Error if memory not found or deletion fails
+//   - error: Error if memory not found, access denied, or deletion fails
 //
 // Example:
 //
-//	err := service.DeleteMemory("memory456")
-func (s *MemoryService) DeleteMemory(ctx context.Context, memoryID string) error {
-	_, err := s.memoryDAO.GetByID(ctx, dao.DB, memoryID)
-	if err != nil {
-		return fmt.Errorf("memory '%s' not found", memoryID)
+//	err := service.DeleteMemory(ctx, "user123", "memory456")
+func (s *MemoryService) DeleteMemory(ctx context.Context, userID, memoryID string) error {
+	// Verify the caller has access to this memory
+	if _, err := s.requireMemoryAccess(ctx, userID, memoryID); err != nil {
+		return err
 	}
 
 	// TODO: Delete associated message index - Implementation pending MessageService
@@ -800,7 +826,7 @@ func (s *MemoryService) DeleteMemory(ctx context.Context, memoryID string) error
 	// }
 
 	// Delete memory record
-	if err = s.memoryDAO.DeleteByID(ctx, dao.DB, memoryID); err != nil {
+	if err := s.memoryDAO.DeleteByID(ctx, dao.DB, memoryID); err != nil {
 		return errors.New("failed to delete memory")
 	}
 
@@ -875,6 +901,18 @@ func (s *MemoryService) AddMessage(ctx context.Context, currentUserID string, me
 			res = &QueueSaveResult{}
 		}
 		res.NotFound = append(missingMemoryIDs, res.NotFound...)
+	}
+	errorMsg := memorySaveErrorMessage(res)
+	if errorMsg != "" {
+		return false, errorMsg, nil
+	}
+	return true, "All add to task.", nil
+}
+
+func (s *MemoryService) saveAgentMessage(ctx context.Context, memoryIDs []string, msg MemoryMessage) (bool, string, error) {
+	res, err := NewMemoryMessageService(s).QueueSaveToMemoryTask(ctx, splitFilterValues(memoryIDs), msg)
+	if err != nil {
+		return false, err.Error(), err
 	}
 	errorMsg := memorySaveErrorMessage(res)
 	if errorMsg != "" {
@@ -1252,7 +1290,7 @@ func memorySearchIndexNames(memories []*entity.Memory) []string {
 			continue
 		}
 		indexName := memoryIndexName(memory.TenantID)
-		if engine.GetEngineType() == engine.EngineInfinity {
+		if engine.GetEngineType() == "infinity" {
 			indexName = fmt.Sprintf("%s_%s", indexName, memory.ID)
 		}
 		if _, ok := seen[indexName]; ok {
@@ -1469,8 +1507,8 @@ func (s *MemoryService) ListMemories(ctx context.Context, userID string, tenantI
 		}
 		memoryMap := map[string]interface{}{
 			"id":           resp.ID,
-			"llm_id":       ResolveTenantModelDisplayName(ptrStringValue(resp.TenantLLMID), resp.LLMID, modelNameCache),
-			"embd_id":      ResolveTenantModelDisplayName(ptrStringValue(resp.TenantEmbdID), resp.EmbdID, modelNameCache),
+			"llm_id":       ResolveTenantModelDisplayName(ctx, dao.DB, ptrStringValue(resp.TenantLLMID), resp.LLMID, modelNameCache),
+			"embd_id":      ResolveTenantModelDisplayName(ctx, dao.DB, ptrStringValue(resp.TenantEmbdID), resp.EmbdID, modelNameCache),
 			"name":         resp.Name,
 			"avatar":       resp.Avatar,
 			"tenant_id":    resp.TenantID,
@@ -1494,7 +1532,7 @@ func (s *MemoryService) ListMemories(ctx context.Context, userID string, tenantI
 // ResolveTenantModelDisplayName turns a tenant_model ID into
 // modelName@instance@provider. rawModelID is the API-facing fallback
 // stored on memory.llm_id / memory.embd_id / knowledgebase.embd_id.
-func ResolveTenantModelDisplayName(tenantModelID, rawModelID string, cache map[string]string) string {
+func ResolveTenantModelDisplayName(ctx context.Context, db *gorm.DB, tenantModelID, rawModelID string, cache map[string]string) string {
 	tenantModelID = strings.TrimSpace(tenantModelID)
 	rawModelID = strings.TrimSpace(rawModelID)
 	if tenantModelID == "" || strings.Contains(tenantModelID, "@") {
@@ -1510,15 +1548,15 @@ func ResolveTenantModelDisplayName(tenantModelID, rawModelID string, cache map[s
 		cache[tenantModelID] = displayName
 	}()
 
-	model, err := dao.NewTenantModelDAO().GetByID(tenantModelID)
+	model, err := dao.NewTenantModelDAO().GetByID(ctx, db, tenantModelID)
 	if err != nil {
 		return displayName
 	}
-	instance, err := dao.NewTenantModelInstanceDAO().GetByID(model.InstanceID)
+	instance, err := dao.NewTenantModelInstanceDAO().GetByID(ctx, db, model.InstanceID)
 	if err != nil {
 		return displayName
 	}
-	provider, err := dao.NewTenantModelProviderDAO().GetByID(model.ProviderID)
+	provider, err := dao.NewTenantModelProviderDAO().GetByID(ctx, db, model.ProviderID)
 	if err != nil {
 		return displayName
 	}
@@ -1527,19 +1565,30 @@ func ResolveTenantModelDisplayName(tenantModelID, rawModelID string, cache map[s
 	return displayName
 }
 
-// GetMemoryConfig retrieves the full configuration of a memory by ID
+// GetMemoryConfig retrieves the full configuration of a memory by ID after
+// verifying the caller's access.
 //
 // Parameters:
+//   - userID: The ID of the user requesting the configuration (access control)
 //   - memoryID: The ID of the memory to retrieve
 //
 // Returns:
 //   - *CreateMemoryResponse: The memory configuration details
-//   - error: Error if memory not found
+//   - error: Error if memory not found or access denied
 //
 // Example:
 //
-//	resp, err := service.GetMemoryConfig("memory456")
-func (s *MemoryService) GetMemoryConfig(ctx context.Context, memoryID string) (*CreateMemoryResponse, error) {
+//	resp, err := service.GetMemoryConfig(ctx, "user123", "memory456")
+func (s *MemoryService) GetMemoryConfig(ctx context.Context, userID, memoryID string) (*CreateMemoryResponse, error) {
+	if _, err := s.requireMemoryAccess(ctx, userID, memoryID); err != nil {
+		return nil, err
+	}
+	return s.getMemoryConfig(ctx, memoryID)
+}
+
+// getMemoryConfig retrieves the full configuration of a memory without access
+// control checks. This is for trusted internal callers such as queue processing.
+func (s *MemoryService) getMemoryConfig(ctx context.Context, memoryID string) (*CreateMemoryResponse, error) {
 	memory, err := s.memoryDAO.GetWithOwnerNameByID(ctx, dao.DB, memoryID)
 	if err != nil {
 		return nil, fmt.Errorf("memory '%s' not found", memoryID)

@@ -89,8 +89,10 @@ func (r *SearchBotRetrievalTestRequest) UnmarshalJSON(data []byte) error {
 }
 
 // SearchBotRequest is the request body for POST /api/v1/searchbots/related_questions.
+// Question is validated manually below so the error message follows the
+// established API contract instead of the Gin validator format.
 type SearchBotRequest struct {
-	Question string `json:"question" binding:"required"`
+	Question string `json:"question"`
 	SearchID string `json:"search_id,omitempty"`
 }
 
@@ -260,7 +262,8 @@ func (h *SearchBotHandler) Ask(c *gin.Context) {
 		}
 	}
 	if modelID == "" && h.tenantSvc != nil {
-		defaultModel, err := h.tenantSvc.GetDefaultModelName(user.ID, entity.ModelTypeChat)
+		ctx := c.Request.Context()
+		defaultModel, err := h.tenantSvc.GetDefaultModelName(ctx, user.ID, entity.ModelTypeChat)
 		if err == nil && defaultModel != "" {
 			modelID = defaultModel
 		}

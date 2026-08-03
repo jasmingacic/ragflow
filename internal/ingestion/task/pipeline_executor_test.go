@@ -22,6 +22,34 @@ import (
 
 func strPtr(s string) *string { return &s }
 
+// TestMarkCompiledProductsHidden verifies the pipeline caller hides
+// per-document compiled knowledge products (compile_kwd present) as
+// available_int=0 while leaving ordinary source chunks searchable
+// (available_int=1, the index default). Merged dataset-level products are written
+// by the consumer and never reach this path, so they are never double-marked.
+func TestMarkCompiledProductsHidden(t *testing.T) {
+	chunks := []map[string]any{
+		{"id": "src-1", "content_with_weight": "ordinary source chunk"},
+		{"id": "struct-1", "compile_kwd": "structure", "content_with_weight": "entity A"},
+		{"id": "wiki-1", "compile_kwd": "artifact_page", "content_with_weight": "page X"},
+		{"id": "src-2", "content_with_weight": "another source chunk"},
+	}
+	markCompiledProductsHidden(chunks)
+
+	if v, ok := chunks[0]["available_int"]; ok {
+		t.Fatalf("ordinary source chunk should keep default available_int, got %v", v)
+	}
+	if chunks[1]["available_int"] != 0 {
+		t.Fatalf("compiled structure chunk should be available_int=0, got %v", chunks[1]["available_int"])
+	}
+	if chunks[2]["available_int"] != 0 {
+		t.Fatalf("compiled wiki chunk should be available_int=0, got %v", chunks[2]["available_int"])
+	}
+	if v, ok := chunks[3]["available_int"]; ok {
+		t.Fatalf("source chunk without compile_kwd should keep default available_int, got %v", v)
+	}
+}
+
 func makeTaskCtx() *TaskContext {
 	return &TaskContext{
 		IngestionTask: &entity.IngestionTask{
@@ -111,7 +139,6 @@ func TestNewPipelineExecutor_RejectsIncompleteTaskContext(t *testing.T) {
 		{name: "missing doc id", mutate: func(ctx *TaskContext) { ctx.Doc.ID = "" }},
 		{name: "missing kb id", mutate: func(ctx *TaskContext) { ctx.Doc.KbID = "" }},
 		{name: "missing doc name", mutate: func(ctx *TaskContext) { ctx.Doc.Name = nil }},
-		{name: "missing knowledgebase id", mutate: func(ctx *TaskContext) { ctx.KB.ID = "" }},
 		{name: "missing tenant id", mutate: func(ctx *TaskContext) { ctx.Tenant.ID = "" }},
 	}
 
@@ -124,6 +151,19 @@ func TestNewPipelineExecutor_RejectsIncompleteTaskContext(t *testing.T) {
 				t.Fatal("expected validation error")
 			}
 		})
+	}
+}
+
+// TestNewPipelineExecutor_AcceptsDebugTaskContext verifies the canvas-debug
+// (dry-run) contract: a TaskContext with an empty KB.ID is valid because debug
+// mode carries no knowledgebase. KB.ID == "" never occurs in production
+// ingestion, which always supplies a KB.
+func TestNewPipelineExecutor_AcceptsDebugTaskContext(t *testing.T) {
+	ctx := makeTaskCtx()
+	ctx.KB = entity.Knowledgebase{ID: ""}
+	ctx.Doc.KbID = ""
+	if _, err := NewPipelineExecutor(ctx, "flow-1", 0); err != nil {
+		t.Fatalf("debug TaskContext rejected: %v", err)
 	}
 }
 

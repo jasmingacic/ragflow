@@ -17,7 +17,6 @@
 package admin
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,7 +112,7 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 
-	secretKey, err := server.GetSecretKey(redis.Get())
+	secretKey, err := server.GetSecretKey(ctx, redis.Get())
 	if err != nil {
 		common.ErrorWithCode(c, common.CodeServerError, fmt.Sprintf("Failed to get secret key: %s", err.Error()))
 		return
@@ -144,7 +143,8 @@ func (h *Handler) Logout(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.Logout(user); err != nil {
+	ctx := c.Request.Context()
+	if err := h.service.Logout(ctx, user); err != nil {
 		common.ErrorWithCode(c, common.CodeServerError, err.Error())
 		return
 	}
@@ -214,11 +214,11 @@ func (h *Handler) ListUsers(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
 	var users []map[string]interface{}
 	switch common.GetRAGFlowType() {
 	case common.OpenSourceVersion:
-
-		users, err = h.service.ListUsers(pageInt, pageSizeInt, name, status, sort, orderBy)
+		users, err = h.service.ListUsers(ctx, pageInt, pageSizeInt, name, status, sort, orderBy)
 		if err != nil {
 			common.ErrorWithCode(c, common.CodeServerError, err.Error())
 			return
@@ -227,7 +227,7 @@ func (h *Handler) ListUsers(c *gin.Context) {
 		common.SuccessWithData(c, users, "List users")
 		return
 	case common.EnterpriseEdition:
-		users, err = h.service.ListUsersEE(pageInt, pageSizeInt, name, status, role, sort, orderBy, plan, topInt, daysInt, quotaPtr)
+		users, err = h.service.ListUsersEE(ctx, pageInt, pageSizeInt, name, status, role, sort, orderBy, plan, topInt, daysInt, quotaPtr)
 		if err != nil {
 			common.ErrorWithCode(c, common.CodeServerError, err.Error())
 			return
@@ -337,12 +337,13 @@ func (h *Handler) ChangePassword(c *gin.Context) {
 	}
 
 	var req ChangePasswordHTTPRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err = c.ShouldBindJSON(&req); err != nil {
 		common.ErrorWithCode(c, common.CodeBadRequest, "New password is required")
 		return
 	}
 
-	if err := h.service.ChangePassword(username, req.NewPassword); err != nil {
+	ctx := c.Request.Context()
+	if err = h.service.ChangePassword(ctx, username, req.NewPassword); err != nil {
 		common.ErrorWithCode(c, common.CodeServerError, err.Error())
 		return
 	}
@@ -363,7 +364,7 @@ func (h *Handler) UpdateUserActivateStatus(c *gin.Context) {
 	}
 
 	var req UpdateActivateStatusHTTPRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err = c.ShouldBindJSON(&req); err != nil {
 		common.ErrorWithCode(c, common.CodeBadRequest, "Activation status is required")
 		return
 	}
@@ -374,7 +375,8 @@ func (h *Handler) UpdateUserActivateStatus(c *gin.Context) {
 	}
 
 	isActive := req.ActivateStatus == "on"
-	if err := h.service.UpdateUserActivateStatus(username, isActive); err != nil {
+	ctx := c.Request.Context()
+	if err = h.service.UpdateUserActivateStatus(ctx, username, isActive); err != nil {
 		common.ErrorWithCode(c, common.CodeServerError, err.Error())
 		return
 	}
@@ -396,7 +398,8 @@ func (h *Handler) GrantAdmin(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.GrantAdmin(username); err != nil {
+	ctx := c.Request.Context()
+	if err = h.service.GrantAdmin(ctx, username); err != nil {
 		common.ErrorWithCode(c, common.CodeServerError, err.Error())
 		return
 	}
@@ -418,7 +421,8 @@ func (h *Handler) RevokeAdmin(c *gin.Context) {
 		return
 	}
 
-	if err = h.service.RevokeAdmin(username); err != nil {
+	ctx := c.Request.Context()
+	if err = h.service.RevokeAdmin(ctx, username); err != nil {
 		common.ErrorWithCode(c, common.CodeServerError, err.Error())
 		return
 	}
@@ -485,7 +489,8 @@ func (h *Handler) DeleteUserAPIToken(c *gin.Context) {
 
 // GetServices handle get all services
 func (h *Handler) GetServices(c *gin.Context) {
-	services, err := h.service.ListServices()
+	ctx := c.Request.Context()
+	services, err := h.service.ListServices(ctx)
 	if err != nil {
 		common.ResponseWithHttpCodeData(c, http.StatusInternalServerError, common.CodeBadRequest, nil, err.Error())
 		return
@@ -513,48 +518,38 @@ func (h *Handler) GetServicesByType(c *gin.Context) {
 
 // GetService handle get service details
 func (h *Handler) GetService(c *gin.Context) {
-	serviceID := c.Param("service_id")
-	if serviceID == "" {
-		common.ErrorWithCode(c, common.CodeBadRequest, "Service ID is required")
+	serviceName := c.Param("service_name")
+	if serviceName == "" {
+		common.ErrorWithCode(c, common.CodeBadRequest, "Service name is required")
 		return
 	}
 
-	// Get all services and find the one with matching ID
-	allConfigs := server.GetAllConfigs()
-
-	var targetService map[string]interface{}
-	for _, config := range allConfigs {
-		if id, ok := config["id"]; ok {
-			if strconv.Itoa(id.(int)) == serviceID {
-				targetService = config
-				break
-			}
-		}
-	}
-
-	if targetService == nil {
-		common.ErrorWithCode(c, common.CodeNotFound, "Service not found")
-		return
-	}
-
-	serviceStatus, err := h.service.GetServiceDetails(targetService)
+	ctx := c.Request.Context()
+	services, err := h.service.ListServices(ctx)
 	if err != nil {
 		common.ErrorWithCode(c, common.CodeServerError, err.Error())
 		return
 	}
 
-	common.SuccessWithData(c, serviceStatus, "")
+	for _, serviceInstance := range services {
+		if serviceInstance.Name == serviceName {
+			common.SuccessWithData(c, serviceInstance, "")
+			return
+		}
+	}
+
+	common.ErrorWithCode(c, common.CodeNotFound, "Service not found")
 }
 
 // ShutdownService handle shutdown service
 func (h *Handler) ShutdownService(c *gin.Context) {
-	serviceID := c.Param("service_id")
-	if serviceID == "" {
-		common.ErrorWithCode(c, common.CodeBadRequest, "Service ID is required")
+	serviceName := c.Param("service_name")
+	if serviceName == "" {
+		common.ErrorWithCode(c, common.CodeBadRequest, "Service name is required")
 		return
 	}
 
-	result, err := h.service.ShutdownService(serviceID)
+	result, err := h.service.ShutdownService(serviceName)
 	if err != nil {
 		common.ErrorWithCode(c, common.CodeServerError, err.Error())
 		return
@@ -565,13 +560,13 @@ func (h *Handler) ShutdownService(c *gin.Context) {
 
 // StartService handle start service
 func (h *Handler) StartService(c *gin.Context) {
-	serviceID := c.Param("service_id")
-	if serviceID == "" {
-		common.ErrorWithCode(c, common.CodeBadRequest, "Service ID is required")
+	serviceName := c.Param("service_name")
+	if serviceName == "" {
+		common.ErrorWithCode(c, common.CodeBadRequest, "Service name is required")
 		return
 	}
 
-	result, err := h.service.StartService(serviceID)
+	result, err := h.service.StartService(serviceName)
 	if err != nil {
 		common.ErrorWithCode(c, common.CodeServerError, err.Error())
 		return
@@ -582,13 +577,13 @@ func (h *Handler) StartService(c *gin.Context) {
 
 // RestartService handle restart service
 func (h *Handler) RestartService(c *gin.Context) {
-	serviceID := c.Param("service_id")
-	if serviceID == "" {
-		common.ErrorWithCode(c, common.CodeBadRequest, "Service ID is required")
+	serviceName := c.Param("service_name")
+	if serviceName == "" {
+		common.ErrorWithCode(c, common.CodeBadRequest, "Service name is required")
 		return
 	}
 
-	result, err := h.service.RestartService(serviceID)
+	result, err := h.service.RestartService(serviceName)
 	if err != nil {
 		common.ErrorWithCode(c, common.CodeServerError, err.Error())
 		return
@@ -860,7 +855,7 @@ func (h *Handler) HandleNoRoute(c *gin.Context) {
 
 // GetLogLevel returns the current log level
 func (h *Handler) GetLogLevel(c *gin.Context) {
-	level := common.GetLevel()
+	level := common.GetLogLevel()
 	common.SuccessWithData(c, gin.H{"level": level}, "SUCCESS")
 }
 
@@ -877,7 +872,7 @@ func (h *Handler) SetLogLevel(c *gin.Context) {
 		return
 	}
 
-	if err := common.SetLevel(req.Level); err != nil {
+	if err := common.SetLogLevel(req.Level); err != nil {
 		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
@@ -1090,11 +1085,12 @@ func (h *Handler) ListIngestionTasks(c *gin.Context) {
 	var err error
 	var tasks []map[string]interface{}
 	var req ListIngestionTasksRequest
+	ctx := c.Request.Context()
+
 	if err = c.ShouldBindJSON(&req); err != nil {
-		ctx := c.Request.Context()
 		tasks, err = h.service.ListIngestionTasks(ctx)
 	} else {
-		tasks, err = h.service.ListIngestionTasksByCondition(req.Email, req.Status)
+		tasks, err = h.service.ListIngestionTasksByCondition(ctx, req.Email, req.Status)
 	}
 
 	if err != nil {
@@ -1230,7 +1226,8 @@ func (h *Handler) PingStore(c *gin.Context) {
 		return
 	}
 
-	if storageImpl.Health() {
+	ctx := c.Request.Context()
+	if storageImpl.Health(ctx) {
 		common.SuccessNoMessage(c, "SUCCESS")
 	} else {
 		common.ErrorWithCode(c, common.CodeServerError, "storage health check failed")
@@ -1238,8 +1235,9 @@ func (h *Handler) PingStore(c *gin.Context) {
 }
 
 func (h *Handler) PingCache(c *gin.Context) {
+	ctx := c.Request.Context()
 	redisClient := redis.Get()
-	if redisClient.Health() {
+	if redisClient.Health(ctx) {
 		common.SuccessNoMessage(c, "SUCCESS")
 	} else {
 		common.ErrorWithCode(c, common.CodeServerError, "cache health check failed")
@@ -1248,7 +1246,7 @@ func (h *Handler) PingCache(c *gin.Context) {
 
 func (h *Handler) PingEngine(c *gin.Context) {
 	docEngine := engine.Get()
-	ctx := context.Background()
+	ctx := c.Request.Context()
 	if err := docEngine.Ping(ctx); err != nil {
 		var coded interface {
 			Code() common.ErrorCode

@@ -16,6 +16,7 @@
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 
 from peewee import fn
@@ -40,7 +41,7 @@ _PIPELINE_TASK_TYPE_TO_FINISH_FIELD = {
     PipelineTaskType.GRAPH_RAG: "graphrag_task_finish_at",
     PipelineTaskType.RAPTOR: "raptor_task_finish_at",
     PipelineTaskType.MINDMAP: "mindmap_task_finish_at",
-    PipelineTaskType.ARTIFACT: "artifact_task_finish_at",
+    PipelineTaskType.ARTIFACT: "wiki_task_finish_at",
     PipelineTaskType.SKILL: "skill_task_finish_at",
     PipelineTaskType.STRUCTURE_GRAPH: "structure_graph_task_finish_at",
     PipelineTaskType.STRUCTURE_MINDMAP: "structure_mindmap_task_finish_at",
@@ -49,6 +50,22 @@ _PIPELINE_TASK_TYPE_TO_FINISH_FIELD = {
     PipelineTaskType.SESSION_ESSENCE: "session_essence_task_finish_at",
     PipelineTaskType.STRUCTURE: "structure_task_finish_at",
 }
+
+_EMBEDDING_VECTOR_FIELD = re.compile(r"^q_\d+_vec$")
+
+
+def _remove_embedding_vectors(value):
+    """Remove index-only embedding vectors from a runtime pipeline snapshot."""
+    if isinstance(value, dict):
+        for key in list(value):
+            if _EMBEDDING_VECTOR_FIELD.fullmatch(str(key)):
+                del value[key]
+            else:
+                _remove_embedding_vectors(value[key])
+    elif isinstance(value, list):
+        for item in value:
+            _remove_embedding_vectors(item)
+    return value
 
 
 class PipelineOperationLogService(CommonService):
@@ -205,7 +222,7 @@ class PipelineOperationLogService(CommonService):
             progress_msg=progress_msg,
             process_begin_at=process_begin_at,
             process_duration=process_duration,
-            dsl=json.loads(dsl),
+            dsl=_remove_embedding_vectors(json.loads(dsl)),
             task_type=task_type,
             operation_status=operation_status,
             avatar=avatar,

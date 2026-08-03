@@ -74,7 +74,7 @@ var (
 var (
 	// ErrConnectorNotFound mirrors Python's "Can't find this Connector!".
 	ErrConnectorNotFound = errors.New("can't find this Connector")
-	// ErrConnectorNoAuth mirrors Python's "No authorization." denial.
+	// ErrConnectorNoAuth mirrors Python's "no authorization" denial.
 	ErrConnectorNoAuth = errors.New("no authorization")
 	// ErrConnectorTestUnsupported is returned for connector sources whose
 	// validation path is not yet ported to Go.
@@ -216,13 +216,18 @@ type boxOAuthTokenResponse struct {
 }
 
 // canAccessConnector Test Authentication
-func (s *ConnectorService) canAccessConnector(connector *entity.Connector, userID string) bool {
+func (s *ConnectorService) canAccessConnector(ctx context.Context, connector *entity.Connector, userID string) (bool, error) {
 	if connector.TenantID == userID {
-		return true
+		return true, nil
 	}
-
-	_, err := s.userTenantDAO.FilterByUserIDAndTenantID(userID, connector.TenantID)
-	return err == nil
+	_, err := s.userTenantDAO.FilterByUserIDAndTenantID(ctx, dao.DB, userID, connector.TenantID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // cancelConnectorTasks Stop connector tasks
@@ -289,7 +294,7 @@ func (s *ConnectorService) GetConnector(ctx context.Context, connectorID, userID
 		return connector, common.CodeSuccess, nil
 	}
 
-	tenantIDs, err := s.userTenantDAO.GetTenantIDsByUserID(userID)
+	tenantIDs, err := s.userTenantDAO.GetTenantIDsByUserID(ctx, dao.DB, userID)
 	if err != nil {
 		return nil, common.CodeServerError, err
 	}
@@ -332,7 +337,7 @@ func (s *ConnectorService) accessible(ctx context.Context, connectorID, userID s
 		return true, nil
 	}
 
-	tenantIDs, err := s.userTenantDAO.GetTenantIDsByUserID(userID)
+	tenantIDs, err := s.userTenantDAO.GetTenantIDsByUserID(ctx, dao.DB, userID)
 	if err != nil {
 		return false, err
 	}
@@ -450,7 +455,7 @@ func (s *ConnectorService) StartGoogleWebOAuth(ctx context.Context, userID, sour
 		CodeVerifier: codeVerifier,
 		CreatedAt:    time.Now().Unix(),
 	}
-	if ok := redisClient.SetObj(webStateCacheKey(flowID, source), state, webFlowTTL); !ok {
+	if ok := redisClient.SetObj(ctx, webStateCacheKey(flowID, source), state, webFlowTTL); !ok {
 		return nil, common.CodeServerError, fmt.Errorf("failed to initialize Google OAuth flow. Please verify the uploaded client configuration")
 	}
 
@@ -479,17 +484,17 @@ func (s *ConnectorService) GoogleWebOAuthCallback(ctx context.Context, source, s
 
 	stateKey := webStateCacheKey(stateID, source)
 	var state googleWebOAuthState
-	if ok := redisClient.GetObj(stateKey, &state); !ok {
+	if ok := redisClient.GetObj(ctx, stateKey, &state); !ok {
 		return renderWebOAuthPopup(stateID, false, "Authorization session expired. Please restart from the main window.", source)
 	}
 
 	if state.ClientConfig == nil {
-		redisClient.Delete(stateKey)
+		redisClient.Delete(ctx, stateKey)
 		return renderWebOAuthPopup(stateID, false, "Authorization session was invalid. Please retry.", source)
 	}
 
 	if strings.TrimSpace(oauthError) != "" {
-		redisClient.Delete(stateKey)
+		redisClient.Delete(ctx, stateKey)
 		message := strings.TrimSpace(errorDescription)
 		if message == "" {
 			message = strings.TrimSpace(oauthError)
@@ -507,7 +512,7 @@ func (s *ConnectorService) GoogleWebOAuthCallback(ctx context.Context, source, s
 
 	credentials, err := exchangeGoogleWebOAuthCode(state.ClientConfig, googleOAuthScopesForSource(source), state.RedirectURI, code, state.CodeVerifier)
 	if err != nil {
-		redisClient.Delete(stateKey)
+		redisClient.Delete(ctx, stateKey)
 		return renderWebOAuthPopup(stateID, false, "Failed to exchange tokens with Google. Please retry.", source)
 	}
 
@@ -515,11 +520,11 @@ func (s *ConnectorService) GoogleWebOAuthCallback(ctx context.Context, source, s
 		UserID:      state.UserID,
 		Credentials: credentials,
 	}
-	if ok := redisClient.SetObj(webResultCacheKey(stateID, source), result, webFlowTTL); !ok {
-		redisClient.Delete(stateKey)
+	if ok := redisClient.SetObj(ctx, webResultCacheKey(stateID, source), result, webFlowTTL); !ok {
+		redisClient.Delete(ctx, stateKey)
 		return renderWebOAuthPopup(stateID, false, "Failed to exchange tokens with Google. Please retry.", source)
 	}
-	redisClient.Delete(stateKey)
+	redisClient.Delete(ctx, stateKey)
 
 	return renderWebOAuthPopup(stateID, true, "Authorization completed successfully.", source)
 }
@@ -540,7 +545,7 @@ func (s *ConnectorService) PollGoogleWebOAuthResult(ctx context.Context, userID,
 
 	resultKey := webResultCacheKey(strings.TrimSpace(req.FlowID), source)
 	var result googleWebOAuthResult
-	if ok := redisClient.GetObj(resultKey, &result); !ok {
+	if ok := redisClient.GetObj(ctx, resultKey, &result); !ok {
 		return nil, common.CodeRunning, fmt.Errorf("authorization is still pending")
 	}
 
@@ -548,7 +553,7 @@ func (s *ConnectorService) PollGoogleWebOAuthResult(ctx context.Context, userID,
 		return nil, common.CodePermissionError, fmt.Errorf("you are not allowed to access this authorization result")
 	}
 
-	redisClient.Delete(resultKey)
+	redisClient.Delete(ctx, resultKey)
 	return &PollGoogleWebOAuthResultResponse{Credentials: result.Credentials}, common.CodeSuccess, nil
 }
 
@@ -841,7 +846,11 @@ func (s *ConnectorService) DeleteConnector(ctx context.Context, connectorID, use
 		return false, common.CodeServerError, err
 	}
 
-	if !s.canAccessConnector(connector, userID) {
+	canAccess, err := s.canAccessConnector(ctx, connector, userID)
+	if err != nil {
+		return false, common.CodeServerError, err
+	}
+	if !canAccess {
 		return false, common.CodeAuthenticationError, fmt.Errorf("no authorization")
 	}
 
@@ -877,7 +886,11 @@ func (s *ConnectorService) UpdateConnector(ctx context.Context, connectorID, use
 		return nil, common.CodeServerError, err
 	}
 
-	if !s.canAccessConnector(connector, userID) {
+	canAccess, err := s.canAccessConnector(ctx, connector, userID)
+	if err != nil {
+		return nil, common.CodeServerError, err
+	}
+	if !canAccess {
 		return nil, common.CodeAuthenticationError, fmt.Errorf("no authorization")
 	}
 
@@ -960,7 +973,11 @@ func (s *ConnectorService) RebuildConnector(ctx context.Context, connectorID, us
 		return false, common.CodeServerError, err
 	}
 
-	if !s.canAccessConnector(connector, userID) {
+	canAccess, err := s.canAccessConnector(ctx, connector, userID)
+	if err != nil {
+		return false, common.CodeServerError, err
+	}
+	if !canAccess {
 		return false, common.CodeAuthenticationError, fmt.Errorf("no authorization")
 	}
 
@@ -1003,7 +1020,11 @@ func (s *ConnectorService) ListLog(ctx context.Context, connectorID, userID stri
 		return nil, 0, common.CodeServerError, err
 	}
 
-	if !s.canAccessConnector(connector, userID) {
+	canAccess, err := s.canAccessConnector(ctx, connector, userID)
+	if err != nil {
+		return nil, 0, common.CodeServerError, err
+	}
+	if !canAccess {
 		return nil, 0, common.CodeAuthenticationError, fmt.Errorf("no authorization")
 	}
 
@@ -1058,7 +1079,7 @@ func (s *ConnectorService) StartBoxWebOAuth(ctx context.Context, userID string, 
 		RedirectURI:  redirectURI,
 		CreatedAt:    time.Now().Unix(),
 	}
-	if ok := redisClient.SetObj(webStateCacheKey(flowID, "box"), state, webFlowTTL); !ok {
+	if ok := redisClient.SetObj(ctx, webStateCacheKey(flowID, "box"), state, webFlowTTL); !ok {
 		return nil, common.CodeServerError, fmt.Errorf("failed to initialize Box OAuth flow. Please verify the client configuration")
 	}
 
@@ -1082,12 +1103,12 @@ func (s *ConnectorService) BoxWebOAuthCallback(ctx context.Context, flowID strin
 
 	stateKey := webStateCacheKey(flowID, "box")
 	var state boxWebOAuthState
-	if ok := redisClient.GetObj(stateKey, &state); !ok {
+	if ok := redisClient.GetObj(ctx, stateKey, &state); !ok {
 		return renderWebOAuthPopup(flowID, false, "Box OAuth session expired or invalid.", "box")
 	}
 
 	if strings.TrimSpace(oauthError) != "" {
-		redisClient.Delete(stateKey)
+		redisClient.Delete(ctx, stateKey)
 		message := strings.TrimSpace(errorDescription)
 		if message == "" {
 			message = strings.TrimSpace(oauthError)
@@ -1105,7 +1126,7 @@ func (s *ConnectorService) BoxWebOAuthCallback(ctx context.Context, flowID strin
 
 	token, err := exchangeBoxAuthorizationCode(state.ClientID, state.ClientSecret, state.RedirectURI, code)
 	if err != nil {
-		redisClient.Delete(stateKey)
+		redisClient.Delete(ctx, stateKey)
 		return renderWebOAuthPopup(flowID, false, "Failed to exchange tokens with Box. Please retry.", "box")
 	}
 
@@ -1116,11 +1137,11 @@ func (s *ConnectorService) BoxWebOAuthCallback(ctx context.Context, flowID strin
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
 	}
-	if ok := redisClient.SetObj(webResultCacheKey(flowID, "box"), result, webFlowTTL); !ok {
-		redisClient.Delete(stateKey)
+	if ok := redisClient.SetObj(ctx, webResultCacheKey(flowID, "box"), result, webFlowTTL); !ok {
+		redisClient.Delete(ctx, stateKey)
 		return renderWebOAuthPopup(flowID, false, "Failed to exchange tokens with Box. Please retry.", "box")
 	}
-	redisClient.Delete(stateKey)
+	redisClient.Delete(ctx, stateKey)
 
 	return renderWebOAuthPopup(flowID, true, "Authorization completed successfully.", "box")
 }
@@ -1137,7 +1158,7 @@ func (s *ConnectorService) PollBoxWebOAuthResult(ctx context.Context, userID str
 
 	resultKey := webResultCacheKey(strings.TrimSpace(req.FlowID), "box")
 	var result boxWebOAuthCredentials
-	if ok := redisClient.GetObj(resultKey, &result); !ok {
+	if ok := redisClient.GetObj(ctx, resultKey, &result); !ok {
 		return nil, common.CodeRunning, fmt.Errorf("authorization is still pending")
 	}
 
@@ -1145,7 +1166,7 @@ func (s *ConnectorService) PollBoxWebOAuthResult(ctx context.Context, userID str
 		return nil, common.CodePermissionError, fmt.Errorf("you are not allowed to access this authorization result")
 	}
 
-	redisClient.Delete(resultKey)
+	redisClient.Delete(ctx, resultKey)
 	result.UserID = ""
 	return &PollBoxWebOAuthResultResponse{Credentials: result}, common.CodeSuccess, nil
 }

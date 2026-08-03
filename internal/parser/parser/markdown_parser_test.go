@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -85,6 +86,32 @@ func TestMarkdownParser_ParseWithResult_NoImage(t *testing.T) {
 		if kd, _ := item["doc_type_kwd"].(string); kd == "image" {
 			t.Fatal("unexpected image item in text-only markdown")
 		}
+	}
+}
+
+func TestMarkdownParser_ParseWithResult_RendersTableInline(t *testing.T) {
+	ctx := t.Context()
+	p, _ := NewMarkdownParser(GoMarkdown)
+	md := "[M03] Health check package comparison:\n\n| Check item | Basic 699 CNY | Advanced 1299 CNY |\n| --- | --- | --- |\n| Blood routine / Urine routine | Yes | Yes |\n\nNote: All packages require fasting.\n"
+	res := p.ParseWithResult(ctx, "test.md", []byte(md))
+	if res.Err != nil {
+		t.Fatalf("ParseWithResult: %v", res.Err)
+	}
+	if len(res.JSON) != 1 {
+		t.Fatalf("len(JSON) = %d, want 1", len(res.JSON))
+	}
+	text, _ := res.JSON[0]["text"].(string)
+	if got, _ := res.JSON[0]["doc_type_kwd"].(string); got != "text" {
+		t.Fatalf("doc_type_kwd = %q, want text", got)
+	}
+	if !strings.Contains(text, "<table>") || !strings.Contains(text, "<th>Check item</th>") {
+		t.Fatalf("table was not rendered inline: %q", text)
+	}
+	if strings.Contains(text, "| Check item |") {
+		t.Fatalf("raw markdown table leaked into text: %q", text)
+	}
+	if gap := text[strings.Index(text, "</table>"):strings.Index(text, "Note:")]; gap != "</table>\n" {
+		t.Fatalf("gap after table = %q, want %q", gap, "</table>\n")
 	}
 }
 
@@ -176,6 +203,7 @@ func TestResolveMarkdownImage_NoImage(t *testing.T) {
 }
 
 func TestResolveMarkdownImage_HTTPImage(t *testing.T) {
+	withSSRFBypass(t)
 	// httptest servers bind loopback, which the SSRF guard rejects by
 	// default. Allow loopback for this test so the HTTP fetch path is
 	// exercised (production keeps ssrfAllowLoopback == false).
@@ -209,6 +237,7 @@ func TestFetchImageAsBase64_RejectsCredentials(t *testing.T) {
 }
 
 func TestFetchImageAsBase64_InvalidURL(t *testing.T) {
+	withSSRFBypass(t)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))

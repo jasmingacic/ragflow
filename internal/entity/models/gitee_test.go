@@ -46,6 +46,42 @@ func newGiteeForListModelsTest(baseURL string) *GiteeModel {
 	return NewGiteeModel(map[string]string{"default": baseURL}, URLSuffix{Models: "models"})
 }
 
+func newGiteeForChatTest(baseURL string) *GiteeModel {
+	return NewGiteeModel(map[string]string{"default": baseURL}, URLSuffix{Chat: "chat/completions"})
+}
+
+func TestGiteeStreamAcceptsTerminalWithoutDelta(t *testing.T) {
+	withSSRFBypass(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method=%s, want POST", r.Method)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"choices":[{"finish_reason":"stop"}]}`+"\n\n"+
+			`data: [DONE]`+"\n\n")
+	}))
+	defer srv.Close()
+
+	apiKey := "test-key"
+	var sawDone bool
+	err := newGiteeForChatTest(srv.URL).ChatStreamlyWithSender(
+		t.Context(),
+		"gitee-model",
+		[]Message{{Role: "user", Content: "x"}},
+		&APIConfig{ApiKey: &apiKey}, nil, nil,
+		func(content *string, _ *string) error {
+			sawDone = content != nil && *content == "[DONE]"
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if !sawDone {
+		t.Fatal("expected [DONE] sentinel")
+	}
+}
+
 func deepSeekAliasModelsForTest(t *testing.T) map[string]Model {
 	t.Helper()
 
@@ -76,6 +112,7 @@ func deepSeekAliasModelsForTest(t *testing.T) map[string]Model {
 }
 
 func TestGiteeListModelsMapsAllDeepSeekAliasesToModelMetadata(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	initProviderManagerWithGiteeForTest(t)
 	aliasModels := deepSeekAliasModelsForTest(t)
@@ -152,7 +189,8 @@ func TestGiteeListModelsMapsAllDeepSeekAliasesToModelMetadata(t *testing.T) {
 	}
 }
 
-func TestGiteeListModelsKeepsOwnedBySuffixAfterAliasMetadataLookup(t *testing.T) {
+func TestGiteeListModelsKeepsModelNameAfterAliasMetadataLookup(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	initProviderManagerWithGiteeForTest(t)
 
@@ -169,8 +207,8 @@ func TestGiteeListModelsKeepsOwnedBySuffixAfterAliasMetadataLookup(t *testing.T)
 		t.Fatalf("len(models)=%d, want 1", len(models))
 	}
 	model := models[0]
-	if model.Name != "deepseek/deepseek-v4-pro@gitee" {
-		t.Fatalf("Name=%q, want deepseek/deepseek-v4-pro@gitee", model.Name)
+	if model.Name != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("Name=%q, want deepseek/deepseek-v4-pro", model.Name)
 	}
 	if model.MaxTokens == nil || *model.MaxTokens != 1048576 {
 		t.Fatalf("MaxTokens=%v, want 1048576", model.MaxTokens)
@@ -184,6 +222,7 @@ func TestGiteeListModelsKeepsOwnedBySuffixAfterAliasMetadataLookup(t *testing.T)
 }
 
 func TestGiteeListModelsIntegration(t *testing.T) {
+	withSSRFBypass(t)
 	ctx := t.Context()
 	if common.GetEnv(common.EnvGiteeListModelsIntegration) != "1" {
 		t.Skip("set GITEE_LIST_MODELS_INTEGRATION=1 to call the real Gitee models endpoint")

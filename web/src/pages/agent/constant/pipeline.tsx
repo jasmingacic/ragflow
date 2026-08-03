@@ -362,8 +362,7 @@ export const initialExtractorValues = {
 };
 
 export const initialCompilationValues = {
-  ...initialLlmBaseValues,
-  compilation_template_group_ids: [],
+  compilation_template_group_id: '',
   outputs: {
     chunks: { type: 'Array<Object>', value: [] },
   },
