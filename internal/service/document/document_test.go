@@ -40,6 +40,8 @@ import (
 	"ragflow/internal/service"
 	"ragflow/internal/service/file"
 	"ragflow/internal/storage"
+	syncerconnector "ragflow/internal/syncer/connector"
+	"ragflow/internal/utility"
 )
 
 // recordingTaskPublisher implements service.TaskPublisher and records published messages.
@@ -55,7 +57,8 @@ func (r *recordingTaskPublisher) PublishTaskMessage(subject string, msg common.T
 }
 
 type fakeUploadStorage struct {
-	objects map[string][]byte
+	objects  map[string][]byte
+	afterPut func()
 }
 
 func newFakeUploadStorage() *fakeUploadStorage {
@@ -67,6 +70,9 @@ func (f *fakeUploadStorage) Health(_ context.Context) bool { return true }
 func (f *fakeUploadStorage) key(bucket, fnm string) string { return bucket + "/" + fnm }
 func (f *fakeUploadStorage) Put(ctx context.Context, bucket, fnm string, binary []byte, tenantID ...string) error {
 	f.objects[f.key(bucket, fnm)] = append([]byte(nil), binary...)
+	if f.afterPut != nil {
+		f.afterPut()
+	}
 	return nil
 }
 func (f *fakeUploadStorage) Get(ctx context.Context, bucket, fnm string, tenantID ...string) ([]byte, error) {
@@ -730,6 +736,121 @@ func TestContentHashHex_MatchesPythonXXH128(t *testing.T) {
 	}
 }
 
+func TestSyncDocumentUpsertRemovesStagedBlobWhenInsertFails(t *testing.T) {
+	ctx := context.Background()
+	db := setupServiceTestDB(t)
+	pushServiceDB(t, db)
+
+	mockStorage := newFakeUploadStorage()
+	factory := storage.GetStorageFactory()
+	origStorage := factory.GetStorage()
+	factory.SetStorage(mockStorage)
+	t.Cleanup(func() { factory.SetStorage(origStorage) })
+
+	svc := testDocumentService(t)
+	_, err := svc.Upsert(ctx, service.DocumentUpsertInput{
+		TaskContext: service.SyncTaskContext{
+			Connector: entity.Connector{TenantID: "tenant-1"},
+			Knowledgebase: entity.Knowledgebase{
+				ID:           "missing-kb",
+				TenantID:     "tenant-1",
+				Name:         "Missing KB",
+				ParserID:     "naive",
+				ParserConfig: entity.JSONMap{},
+			},
+		},
+		SourceType: "github",
+		DocumentID: "doc-sync-insert",
+		SourceDocument: syncerconnector.SourceDocument{
+			SourceID:           "source-1",
+			SemanticIdentifier: "source",
+			Extension:          ".txt",
+			Blob:               []byte("new content"),
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected insert failure")
+	}
+	for key := range mockStorage.objects {
+		if strings.Contains(key, "/.staged/") {
+			t.Fatalf("expected staged object cleanup, found %s", key)
+		}
+	}
+}
+
+func TestSyncDocumentUpsertRemovesStagedBlobWhenUpdateFails(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	db := setupServiceTestDB(t)
+	pushServiceDB(t, db)
+
+	mockStorage := newFakeUploadStorage()
+	factory := storage.GetStorageFactory()
+	origStorage := factory.GetStorage()
+	factory.SetStorage(mockStorage)
+	t.Cleanup(func() { factory.SetStorage(origStorage) })
+
+	activeLocation := "sync/github/doc-sync-update.txt"
+	if err := mockStorage.Put(context.Background(), "kb-sync", activeLocation, []byte("old content")); err != nil {
+		t.Fatalf("seed active object: %v", err)
+	}
+	oldName := "old.txt"
+	oldHash := "old-hash"
+	if err := db.Create(&entity.Document{
+		ID:           "doc-sync-update",
+		KbID:         "kb-sync",
+		ParserID:     "naive",
+		ParserConfig: entity.JSONMap{},
+		SourceType:   "github",
+		Type:         string(utility.FileTypeTXT),
+		CreatedBy:    "tenant-1",
+		Name:         &oldName,
+		Location:     &activeLocation,
+		Size:         int64(len("old content")),
+		Suffix:       "txt",
+		ContentHash:  &oldHash,
+	}).Error; err != nil {
+		t.Fatalf("seed document: %v", err)
+	}
+
+	svc := testDocumentService(t)
+	mockStorage.afterPut = cancel
+	_, err := svc.Upsert(ctx, service.DocumentUpsertInput{
+		TaskContext: service.SyncTaskContext{
+			Connector: entity.Connector{TenantID: "tenant-1"},
+			Knowledgebase: entity.Knowledgebase{
+				ID:           "kb-sync",
+				TenantID:     "tenant-1",
+				Name:         "Sync KB",
+				ParserID:     "naive",
+				ParserConfig: entity.JSONMap{},
+			},
+		},
+		SourceType: "github",
+		DocumentID: "doc-sync-update",
+		SourceDocument: syncerconnector.SourceDocument{
+			SourceID:           "source-1",
+			SemanticIdentifier: "source",
+			Extension:          ".txt",
+			Blob:               []byte("new content"),
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected update failure")
+	}
+	got, err := mockStorage.Get(context.Background(), "kb-sync", activeLocation)
+	if err != nil {
+		t.Fatalf("active object was removed: %v", err)
+	}
+	if string(got) != "old content" {
+		t.Fatalf("active object overwritten: %q", got)
+	}
+	for key := range mockStorage.objects {
+		if strings.Contains(key, "/.staged/") {
+			t.Fatalf("expected staged object cleanup, found %s", key)
+		}
+	}
+}
+
 func TestUploadLocalDocuments_MirrorsPythonCoreFields(t *testing.T) {
 	db := setupServiceTestDB(t)
 	pushServiceDB(t, db)
@@ -861,7 +982,7 @@ func insertUserTenantForAccessCheck(t *testing.T, userID, tenantID string) {
 	var existingUser entity.User
 	if err := dao.DB.Where("id = ?", userID).First(&existingUser).Error; err != nil {
 		u := &entity.User{ID: userID, Nickname: "test-user", Email: userID + "@test.com", Password: sptr("x")}
-		if err := dao.DB.Create(u).Error; err != nil {
+		if err = dao.DB.Create(u).Error; err != nil {
 			t.Fatalf("insert test user: %v", err)
 		}
 	}
@@ -874,7 +995,7 @@ func insertUserTenantForAccessCheck(t *testing.T, userID, tenantID string) {
 			EmbdID: "embd-default",
 			ASRID:  "asr-default",
 		}
-		if err := dao.DB.Create(tn).Error; err != nil {
+		if err = dao.DB.Create(tn).Error; err != nil {
 			t.Fatalf("insert test tenant: %v", err)
 		}
 	}
@@ -887,7 +1008,7 @@ func insertUserTenantForAccessCheck(t *testing.T, userID, tenantID string) {
 			TenantID: tenantID,
 			Role:     "admin",
 		}
-		if err := dao.DB.Create(ut).Error; err != nil {
+		if err = dao.DB.Create(ut).Error; err != nil {
 			t.Fatalf("insert test user_tenant: %v", err)
 		}
 	}
@@ -1644,7 +1765,7 @@ func TestUpdateDatasetDocumentRejectsCounterMutation(t *testing.T) {
 	if code != common.CodeDataError {
 		t.Fatalf("code = %v, want %v", code, common.CodeDataError)
 	}
-	if err.Error() != "Can't change `chunk_count`." {
+	if err.Error() != "can't change `chunk_count`" {
 		t.Fatalf("err = %q", err.Error())
 	}
 }
@@ -2288,7 +2409,7 @@ func TestBatchUpdateDocumentMetadatasRejectsMissingValue(t *testing.T) {
 	if code != common.CodeDataError {
 		t.Fatalf("code = %v, want data error", code)
 	}
-	if !strings.Contains(err.Error(), "Each update requires key and value.") {
+	if !strings.Contains(err.Error(), "each update requires key and value") {
 		t.Fatalf("err = %v", err)
 	}
 }

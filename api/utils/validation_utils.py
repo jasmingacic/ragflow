@@ -371,6 +371,35 @@ class RaptorConfig(Base):
     scope: Annotated[Literal["file", "dataset"], Field(default="file")]
     auto_disable_for_structured_data: Annotated[bool, Field(default=True)]
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_fields(cls, value: Any) -> Any:
+        """Accept old RAPTOR fields but do not retain them in the config."""
+        if not isinstance(value, dict):
+            return value
+
+        normalized = dict(value)
+        changed_fields = []
+        legacy_ext = normalized.pop("ext", None)
+        if legacy_ext is not None:
+            changed_fields.append("ext")
+        if isinstance(legacy_ext, dict) and normalized.get("clustering_threshold") is None:
+            if "clustering_threshold" in legacy_ext:
+                normalized["clustering_threshold"] = legacy_ext["clustering_threshold"]
+                changed_fields.append("ext.clustering_threshold")
+
+        for field in ("threshold", "clustering_method", "tree_builder"):
+            if field in normalized:
+                normalized.pop(field)
+                changed_fields.append(field)
+        max_token = normalized.get("max_token")
+        if isinstance(max_token, (int, float)) and not isinstance(max_token, bool) and max_token < 512:
+            normalized["max_token"] = 512
+            changed_fields.append("max_token")
+        if changed_fields:
+            logging.debug("RaptorConfig normalized legacy fields: %s", sorted(changed_fields))
+        return normalized
+
 
 class GraphragConfig(Base):
     """Dataset parser configuration for GraphRAG generation."""
@@ -396,7 +425,7 @@ class ParentChildConfig(Base):
     """Dataset parser configuration for parent-child chunking."""
 
     use_parent_child: Annotated[bool, Field(default=False)]
-    children_delimiter: Annotated[str, Field(default=r"\n", min_length=1)]
+    children_delimiter: Annotated[str, Field(default="\n", min_length=1)]
 
 
 class AutoMetadataField(Base):
@@ -424,7 +453,7 @@ class ParserConfig(Base):
     auto_keywords: Annotated[int, Field(default=0, ge=0, le=32)]
     auto_questions: Annotated[int, Field(default=0, ge=0, le=10)]
     chunk_token_num: Annotated[int, Field(default=512, ge=1, le=2048)]
-    delimiter: Annotated[str, Field(default=r"\n", min_length=1)]
+    delimiter: Annotated[str, Field(default="\n", min_length=1)]
     graphrag: Annotated[GraphragConfig, Field(default_factory=lambda: GraphragConfig(use_graphrag=False))]
     html4excel: Annotated[bool, Field(default=False)]
     layout_recognize: Annotated[str, Field(default="DeepDOC")]
@@ -1103,16 +1132,16 @@ def validate_immutable_fields(update_doc_req: UpdateDocumentReq, doc):
         or (None, None) if validation passes.
     """
     if update_doc_req.chunk_count is not None and update_doc_req.chunk_count != int(getattr(doc, "chunk_num", -1)):
-        return "Can't change `chunk_count`.", RetCode.DATA_ERROR
+        return "can't change `chunk_count`", RetCode.DATA_ERROR
 
     if update_doc_req.token_count is not None and update_doc_req.token_count != int(getattr(doc, "token_num", -1)):
-        return "Can't change `token_count`.", RetCode.DATA_ERROR
+        return "can't change `token_count`", RetCode.DATA_ERROR
 
     if update_doc_req.progress is not None:
         progress_from_db = float(getattr(doc, "progress", -1.0))
         # should not use "==" to compare two float values
         if not math.isclose(update_doc_req.progress, progress_from_db):
-            return "Can't change `progress`.", RetCode.DATA_ERROR
+            return "can't change `progress`", RetCode.DATA_ERROR
 
     return None, None
 

@@ -26,9 +26,11 @@ import (
 	"ragflow/internal/admin"
 	"ragflow/internal/agent/audio"
 	"ragflow/internal/agent/canvas"
+	"ragflow/internal/agent/retrievalbridge"
 	agenttool "ragflow/internal/agent/tool"
 	"ragflow/internal/channels"
 	"ragflow/internal/handler"
+	"ragflow/internal/ingestion/knowledge_compile"
 	ingestion "ragflow/internal/ingestion/service"
 	"ragflow/internal/mcp"
 	"ragflow/internal/router"
@@ -40,6 +42,7 @@ import (
 	"ragflow/internal/service/file"
 	"ragflow/internal/service/nav"
 	"ragflow/internal/service/nlp"
+	"ragflow/internal/service/wikisearch"
 	"ragflow/internal/storage"
 	"ragflow/internal/syncer"
 	"ragflow/internal/tokenizer"
@@ -243,21 +246,21 @@ func main() {
 	}
 
 	// Temporary logger initialization
-	var logFile string
+	var logFileName string
 	var serverName string
 	if arguments.name != nil {
 		serverName = *arguments.name
 	} else {
 		serverName = fmt.Sprintf("%s_server", *arguments.mode)
 	}
-	logFile = fmt.Sprintf("%s.log", serverName)
+	logFileName = fmt.Sprintf("%s.log", serverName)
 
 	logLevel := "info"
 	if arguments.debugLog {
 		logLevel = "debug"
 	}
 
-	if err = common.InitLogger(logLevel, common.FileOutput{Path: logFile}, serverName); err != nil {
+	if err = common.InitLogger(logLevel, common.FileOutput{Filename: logFileName, Path: "logs"}, serverName); err != nil {
 		panic("failed to initialize logger: " + err.Error())
 	}
 
@@ -314,7 +317,9 @@ func main() {
 
 	// set server name and log file path
 	server.SetServerName(serverName)
-	logFile = fmt.Sprintf("%s.log", serverName)
+
+	// rename log filename
+	logFileName = fmt.Sprintf("%s.log", serverName)
 
 	logConfig := globalConfig.GetLogConfig()
 
@@ -331,14 +336,12 @@ func main() {
 	globalConfig.SetLogLevel(logLevel)
 
 	fileOut := common.FileOutput{
-		Path:       logFile,
+		Filename:   logFileName,
+		Path:       logConfig.Path,
 		MaxSize:    logConfig.MaxSize,
 		MaxBackups: logConfig.MaxBackups,
 		MaxAge:     logConfig.MaxAge,
 		Compress:   logConfig.Compress,
-	}
-	if logConfig.Path != "" {
-		fileOut.Path = logConfig.Path
 	}
 
 	common.SyncLog()
@@ -515,7 +518,6 @@ func startHeartbeat(serverType common.ServerType, serverID string, port int, hea
 	}
 
 	service.AdminServiceClient = service.NewAdminClient(
-		common.Logger,
 		serverType,
 		serverID,
 		localIP,
@@ -554,7 +556,15 @@ func runIngestor(ctx context.Context, cancel context.CancelFunc, args *serverArg
 	// writes available_int=0 compiled chunks; they just won't be merged until
 	// the consumer is available.
 	globalConfig := server.GetConfig()
-	ingestor := ingestion.NewIngestor(*args.name, 2, []string{"pdf", "docx", "txt"})
+	ingestorCfg := globalConfig.GetIngestorConfig()
+	const maxIngestorConcurrency = int32(1<<30 - 1)
+	if ingestorCfg.MaxConcurrentWorkers > int(maxIngestorConcurrency) {
+		return fmt.Errorf("ingestor max_concurrent_workers %d exceeds maximum %d", ingestorCfg.MaxConcurrentWorkers, maxIngestorConcurrency)
+	}
+	// Apply the configured compiler pool size (no-op when 0; the pool keeps its
+	// vCPU default, overridable via KC_COMPILE_CONCURRENCY).
+	knowledge_compile.SetCompilerConcurrency(ingestorCfg.CompilerPoolSize)
+	ingestor := ingestion.NewIngestor(*args.name, int32(ingestorCfg.MaxConcurrentWorkers), []string{"pdf", "docx", "txt"})
 	ingestor.SetKnowledgeCompileModelConfig(
 		globalConfig.GetDefaultChatModel().Name,
 		globalConfig.GetDefaultEmbeddingModel().Name,
@@ -728,7 +738,14 @@ func startServer(ctx context.Context) {
 	// Initialize doc engine for skill search
 	docEngine := engine.Get()
 	documentDAO := dao.NewDocumentDAO()
-	agenttool.SetRetrievalService(agenttool.NewNLPRetrievalAdapterFromDeps(docEngine, documentDAO))
+	retrievalEnhancer := retrievalbridge.NewEnhancer(docEngine, metadataService)
+	agenttool.SetRetrievalService(agenttool.NewNLPRetrievalAdapterFromDeps(
+		docEngine,
+		documentDAO,
+		modelProviderService,
+		retrievalEnhancer,
+	))
+	agenttool.SetMemoryRetrievalService(retrievalbridge.NewMemoryAdapter(memoryService))
 	common.Info("agent: retrieval service adapter installed")
 
 	// Initialize handler layer
@@ -842,6 +859,14 @@ func startServer(ctx context.Context) {
 	// internal/service/nlp). The embedder resolves the tenant's embedding model
 	// on demand so Search/UpsertDoc can embed queries/summaries automatically.
 	nav.SetNavService(nlp.NewNavService(service.NewNavEmbedder(modelProviderService, "")))
+
+	// Install the compiled-wiki search service. It is backed directly by the
+	// document engine: QueryPages filters the tenant-scoped index to
+	// compile_kwd="wiki_page" (+ supported kinds) so ordinary source chunks are
+	// never relabeled as wiki pages, and BackfillChunks fetches original chunks
+	// by id. When the engine is unavailable the service degrades to empty so the
+	// agent falls back to hybrid search (no failing call).
+	wikisearch.SetService(wikisearch.NewEngineService(engine.Get()))
 
 	// Initialize router
 	r := router.NewRouter(authHandler,

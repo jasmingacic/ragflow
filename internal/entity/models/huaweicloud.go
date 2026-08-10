@@ -123,9 +123,6 @@ func huaweiCloudApplyChatConfig(req map[string]any, modelName string, chatModelC
 	if chatModelConfig == nil {
 		return
 	}
-	if chatModelConfig.MaxTokens != nil {
-		req["max_tokens"] = *chatModelConfig.MaxTokens
-	}
 	if chatModelConfig.Temperature != nil {
 		req["temperature"] = *chatModelConfig.Temperature
 	}
@@ -176,9 +173,8 @@ func (h *HuaweiCloudModel) ChatWithMessages(ctx context.Context, modelName strin
 
 	baseURLRegion := huaweiCloudRegionForModel(apiConfig, modelName)
 	baseURLConfig := &APIConfig{Region: &baseURLRegion}
-	if apiConfig != nil {
-		baseURLConfig.BaseURL = apiConfig.BaseURL
-	}
+	baseURLConfig.BaseURL = apiConfig.BaseURL
+
 	baseURL, err := h.baseModel.GetBaseURL(baseURLConfig)
 	if err != nil {
 		return nil, err
@@ -216,9 +212,8 @@ func (h *HuaweiCloudModel) ChatStreamlyWithSender(ctx context.Context, modelName
 
 	baseURLRegion := huaweiCloudRegionForModel(apiConfig, modelName)
 	baseURLConfig := &APIConfig{Region: &baseURLRegion}
-	if apiConfig != nil {
-		baseURLConfig.BaseURL = apiConfig.BaseURL
-	}
+	baseURLConfig.BaseURL = apiConfig.BaseURL
+
 	baseURL, err := h.baseModel.GetBaseURL(baseURLConfig)
 	if err != nil {
 		return err
@@ -279,9 +274,8 @@ func (h *HuaweiCloudModel) Embed(ctx context.Context, modelName *string, texts [
 
 	baseURLRegion := huaweiCloudRegion(apiConfig)
 	baseURLConfig := &APIConfig{Region: &baseURLRegion}
-	if apiConfig != nil {
-		baseURLConfig.BaseURL = apiConfig.BaseURL
-	}
+	baseURLConfig.BaseURL = apiConfig.BaseURL
+
 	baseURL, err := h.baseModel.GetBaseURL(baseURLConfig)
 	if err != nil {
 		return nil, err
@@ -321,7 +315,7 @@ func (h *HuaweiCloudModel) Embed(ctx context.Context, modelName *string, texts [
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Huawei Cloud embedding API error: status %d, body: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("huawei cloud embedding API error: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var parsed huaweiCloudEmbeddingResponse
@@ -384,9 +378,8 @@ func (h *HuaweiCloudModel) Rerank(ctx context.Context, modelName *string, query 
 
 	baseURLRegion := huaweiCloudRegion(apiConfig)
 	baseURLConfig := &APIConfig{Region: &baseURLRegion}
-	if apiConfig != nil {
-		baseURLConfig.BaseURL = apiConfig.BaseURL
-	}
+	baseURLConfig.BaseURL = apiConfig.BaseURL
+
 	baseURL, err := h.baseModel.GetBaseURL(baseURLConfig)
 	if err != nil {
 		return nil, err
@@ -426,7 +419,7 @@ func (h *HuaweiCloudModel) Rerank(ctx context.Context, modelName *string, query 
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Huawei Cloud rerank API error: status %d, body: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("huawei cloud rerank API error: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var parsed huaweiCloudRerankResponse
@@ -491,9 +484,8 @@ func (h *HuaweiCloudModel) ListModels(ctx context.Context, apiConfig *APIConfig)
 
 	baseURLRegion := huaweiCloudRegion(apiConfig)
 	baseURLConfig := &APIConfig{Region: &baseURLRegion}
-	if apiConfig != nil {
-		baseURLConfig.BaseURL = apiConfig.BaseURL
-	}
+	baseURLConfig.BaseURL = apiConfig.BaseURL
+
 	baseURL, err := h.baseModel.GetBaseURL(baseURLConfig)
 	if err != nil {
 		return nil, err
@@ -521,7 +513,7 @@ func (h *HuaweiCloudModel) ListModels(ctx context.Context, apiConfig *APIConfig)
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Huawei Cloud models API error: status %d, body: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("huawei cloud models API error: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var parsed struct {

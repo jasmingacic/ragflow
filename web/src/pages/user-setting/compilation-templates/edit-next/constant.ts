@@ -20,7 +20,6 @@ export const DefaultTemplateValues: TemplateSchemaType = {
     global_rules: '',
     example: '',
     instruction: '',
-    page_example: '',
     use_blueprint: false,
     plan: true,
     rechunk: false,
@@ -58,4 +57,9 @@ export const FieldLabelKeyMap: Record<string, string> = {
   type: 'setting.fieldType',
   description: 'setting.fieldDescription',
   rule: 'setting.fieldRule',
+};
+
+export const FieldRequiredMessageKeyMap: Record<string, string> = {
+  type: 'setting.fieldTypeRequired',
+  description: 'setting.fieldDescriptionRequired',
 };
