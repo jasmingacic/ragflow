@@ -42,12 +42,16 @@ import xxhash
 
 from common import settings
 from common.misc_utils import thread_pool_exec
-from rag.nlp import search
 from rag.advanced_rag.knowlege_compile._common import (
     encode as _encode,
-    tokenize_for_search as _tokenize_for_search,
+)
+from rag.advanced_rag.knowlege_compile._common import (
     stable_row_id as _stable_row_id,
 )
+from rag.advanced_rag.knowlege_compile._common import (
+    tokenize_for_search as _tokenize_for_search,
+)
+from rag.nlp import search
 from rag.svr.task_executor_refactor.task_context import TaskContext
 
 # ---------------------------------------------------------------------------
@@ -215,14 +219,16 @@ async def _disabled_doc_ids(kb_id: str) -> set[str]:
 # ---------------------------------------------------------------------------
 # Document deletion tracking (sync, called from DocumentService.remove_document)
 # ---------------------------------------------------------------------------
+_UPGRADED_TABLES: set[tuple[str, str]] = set()
 
 
 def record_doc_deletion(tenant_id: str, kb_id: str, doc_id: str) -> None:
-    """Record a document deletion for incremental ghost cleanup.
+    """Write a deletion-marker row into the chunk table.
 
-    Creates a lightweight ES meta row so that the next incremental merge build
-    can look up which docs were deleted and clean up orphaned dataset-level
-    entity rows (those whose *only* source document was the deleted doc).
+    The row is consumed by :func:`_cleanup_deleted_docs` during the next
+    incremental merge build to strip the deleted doc's ID from candidate
+    entity rows and purge ghost entities (those whose *only* source document
+    was the deleted doc).
 
     The deleted doc ID is stored in **deleted_doc_id** (not ``doc_id``) so the
     row survives the ``doc_id``-based chunk sweep that runs in
@@ -236,6 +242,18 @@ def record_doc_deletion(tenant_id: str, kb_id: str, doc_id: str) -> None:
         index = search.index_name(tenant_id)
         if not settings.docStoreConn.index_exist(index, kb_id):
             return
+        # Chunk tables created before #17685 don't have a `deleted_doc_id`
+        # column; the next insert() would fail with 3013. Upgrade the table
+        # in place if needed. New tables pick the column up from
+        # conf/infinity_mapping.json automatically.
+        if (index, kb_id) not in _UPGRADED_TABLES:
+            ensure_fn = getattr(settings.docStoreConn, "ensure_columns", None)
+            if callable(ensure_fn):
+                ensure_fn(
+                    index,
+                    kb_id,
+                    {"deleted_doc_id": {"type": "varchar", "default": "", "analyzer": "whitespace-#"}},
+                )
         row = {
             "id": f"{_DELETION_META_KWD}:{kb_id}:{doc_id}",
             "kb_id": kb_id,
@@ -245,8 +263,10 @@ def record_doc_deletion(tenant_id: str, kb_id: str, doc_id: str) -> None:
             "create_timestamp_flt": datetime.datetime.now().timestamp(),
         }
         settings.docStoreConn.insert([row], index, kb_id)
+        _UPGRADED_TABLES.add((index, kb_id))
     except Exception:
         logging.exception("structure_merge: failed to record doc deletion kb=%s doc=%s", kb_id, doc_id)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -699,24 +719,10 @@ async def _do_build(
         }
         if template_id:
             del_cond["compilation_template_ids"] = [template_id]
-        offset = 0
-        while True:
-            existing = await _index_search(
-                tenant_id,
-                kb_id,
-                del_cond,
-                ["id"],
-                limit=1000,
-                offset=offset,
-            )
-            if not existing:
-                break
-            ids = [r["id"] for r in existing if r.get("id")]
-            if ids:
-                await _index_delete(tenant_id, kb_id, {"id": ids})
-            if len(existing) < 1000:
-                break
-            offset += 1000
+        # Delete by condition in one operation. Paging through matches while
+        # deleting them shifts subsequent offsets and leaves every later page
+        # behind, which is especially visible on large timeline graphs.
+        await _index_delete(tenant_id, kb_id, del_cond)
         # Also delete the meta rows
         meta_id = _meta_row_id(kb_id, compile_kwd, template_id)
         try:
@@ -728,9 +734,7 @@ async def _do_build(
     if incremental and last_build_time is not None:
         cleanup_ok = await _cleanup_deleted_docs(tenant_id, kb_id, compile_kwd, template_id)
 
-    # ── Scan doc_graph rows ──────────────────────────────────────────
-    # Backward compat: existing doc_graph rows don't have scope_kwd.
-    # Search for (scope_kwd="doc" OR (not exists scope_kwd)) AND compile_kwd.
+    # ── Scan document-level graph rows ───────────────────────────────
     base_cond = {
         "compile_kwd": [compile_kwd],
         "knowledge_graph_kwd": ["entity", "relation"],
@@ -738,8 +742,10 @@ async def _do_build(
     if template_id:
         base_cond["compilation_template_ids"] = [template_id]
     scan_all = not incremental or last_build_time is None
-    if not scan_all:
-        base_cond["scope_kwd"] = [_SCOPE_KWD_DOC]
+    # A full rebuild must only scan document-level rows.  Dataset-level rows
+    # are the output of this task and must never become input on the next run.
+    # This also makes disabled-document filtering effective after a rebuild.
+    base_cond["scope_kwd"] = [_SCOPE_KWD_DOC]
 
     # Build timestamp filter for incremental mode
     ts_cond = None
@@ -849,11 +855,10 @@ async def run_structure_merge(ctx: TaskContext) -> None:
     # Resolve embedding model (required for re-embedding dataset rows)
     embd_mdl = None
     try:
-        from api.db.services.llm_service import LLMBundle
         from api.apps.services.dataset_api_service import resolve_model_config
-        from common.constants import LLMType
-
         from api.db.services.knowledgebase_service import KnowledgebaseService
+        from api.db.services.llm_service import LLMBundle
+        from common.constants import LLMType
 
         ok, kb = KnowledgebaseService.get_by_id(ctx.kb_id)
         if ok and kb:

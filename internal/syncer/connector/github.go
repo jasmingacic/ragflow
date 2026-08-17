@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -98,7 +99,9 @@ func (c *GitHubConnector) OpenSync(ctx context.Context, request SyncRequest) (Sy
 	if err != nil {
 		return nil, err
 	}
-	return &githubSyncSession{connector: c, repos: repos, batchSize: c.batchSize, stage: githubStagePRs, page: 1, windowStart: request.WindowStart, windowEnd: request.WindowEnd}, nil
+	session := &githubSyncSession{connector: c, repos: repos, batchSize: c.batchSize, stage: githubStagePRs, page: 1, windowStart: request.WindowStart, windowEnd: request.WindowEnd}
+	session.applyResume(request.Resume)
+	return session, nil
 }
 
 // OpenPrune opens one complete GitHub prune snapshot session.
@@ -150,14 +153,15 @@ func (c *GitHubConnector) listRepoEndpoint(ctx context.Context, path string) ([]
 }
 
 // listPullRequestPage returns one page of GitHub pull requests.
-func (c *GitHubConnector) listPullRequestPage(ctx context.Context, fullName string, page, pageSize int, windowStart *time.Time, windowEnd time.Time) ([]SourceDocument, bool, error) {
+func (c *GitHubConnector) listPullRequestPage(ctx context.Context, fullName string, page, pageSize int, windowStart *time.Time, windowEnd time.Time) ([]githubBufferedDocument, bool, error) {
 	var batch []githubPullRequest
 	headers, err := c.getJSON(ctx, c.apiURL("/repos/"+fullName+"/pulls", githubListQuery(page, pageSize)), &batch)
 	if err != nil {
 		return nil, false, err
 	}
-	documents := make([]SourceDocument, 0, len(batch))
+	documents := make([]githubBufferedDocument, 0, len(batch))
 	doneByWindow := false
+	pageOffset := 0
 	for _, pr := range batch {
 		if beforeOrAtWindowStart(pr.UpdatedAt, windowStart) {
 			doneByWindow = true
@@ -166,21 +170,29 @@ func (c *GitHubConnector) listPullRequestPage(ctx context.Context, fullName stri
 		if afterWindowEnd(pr.UpdatedAt, windowEnd) {
 			continue
 		}
-		documents = append(documents, pr.toSourceDocument(fullName))
+		doc := pr.toSourceDocument(fullName)
+		pageOffset++
+		documents = append(documents, githubBufferedDocument{
+			document:   doc,
+			checkpoint: githubSyncCheckpoint(fullName, githubStagePRs, page, pageOffset, doc),
+			offset:     pageOffset,
+			sourceID:   doc.SourceID,
+		})
 	}
 	done := doneByWindow || !hasNextPage(headers) || len(batch) == 0
 	return documents, done, nil
 }
 
 // listIssuePage returns one page of GitHub issues.
-func (c *GitHubConnector) listIssuePage(ctx context.Context, fullName string, page, pageSize int, windowStart *time.Time, windowEnd time.Time) ([]SourceDocument, bool, error) {
+func (c *GitHubConnector) listIssuePage(ctx context.Context, fullName string, page, pageSize int, windowStart *time.Time, windowEnd time.Time) ([]githubBufferedDocument, bool, error) {
 	var batch []githubIssue
 	headers, err := c.getJSON(ctx, c.apiURL("/repos/"+fullName+"/issues", githubListQuery(page, pageSize)), &batch)
 	if err != nil {
 		return nil, false, err
 	}
-	documents := make([]SourceDocument, 0, len(batch))
+	documents := make([]githubBufferedDocument, 0, len(batch))
 	doneByWindow := false
+	pageOffset := 0
 	for _, issue := range batch {
 		if issue.PullRequest != nil {
 			continue
@@ -192,7 +204,14 @@ func (c *GitHubConnector) listIssuePage(ctx context.Context, fullName string, pa
 		if afterWindowEnd(issue.UpdatedAt, windowEnd) {
 			continue
 		}
-		documents = append(documents, issue.toSourceDocument(fullName))
+		doc := issue.toSourceDocument(fullName)
+		pageOffset++
+		documents = append(documents, githubBufferedDocument{
+			document:   doc,
+			checkpoint: githubSyncCheckpoint(fullName, githubStageIssues, page, pageOffset, doc),
+			offset:     pageOffset,
+			sourceID:   doc.SourceID,
+		})
 	}
 	done := doneByWindow || !hasNextPage(headers) || len(batch) == 0
 	return documents, done, nil
@@ -286,28 +305,38 @@ func (c *GitHubConnector) apiURL(path string, query url.Values) string {
 }
 
 type githubSyncSession struct {
-	connector   *GitHubConnector
-	repos       []githubRepo
-	repoIndex   int
-	stage       string
-	page        int
-	batchSize   int
-	windowStart *time.Time
-	windowEnd   time.Time
-	buffer      []SourceDocument
+	connector      *GitHubConnector
+	repos          []githubRepo
+	repoIndex      int
+	stage          string
+	page           int
+	batchSize      int
+	windowStart    *time.Time
+	windowEnd      time.Time
+	buffer         []githubBufferedDocument
+	resumeRepo     string
+	resumeStage    string
+	resumePage     int
+	resumeOffset   int
+	resumeSourceID string
 }
 
 // NextBatch returns the next GitHub document batch.
 func (s *githubSyncSession) NextBatch(ctx context.Context) (SyncBatch, error) {
 	documents := make([]SourceDocument, 0, s.batchSize)
+	var checkpoint *SyncCheckpoint
 	if len(s.buffer) > 0 {
 		n := s.batchSize
 		if n > len(s.buffer) {
 			n = len(s.buffer)
 		}
-		documents = append(documents, s.buffer[:n]...)
+		for _, buffered := range s.buffer[:n] {
+			documents = append(documents, buffered.document)
+			checkpoint = buffered.checkpoint
+		}
 		s.buffer = s.buffer[n:]
 	}
+
 	for len(documents) < s.batchSize {
 		if s.repoIndex >= len(s.repos) {
 			if len(documents) == 0 {
@@ -321,13 +350,19 @@ func (s *githubSyncSession) NextBatch(ctx context.Context) (SyncBatch, error) {
 		}
 		remaining := s.batchSize - len(documents)
 		if len(batch) > remaining {
-			documents = append(documents, batch[:remaining]...)
+			for _, buffered := range batch[:remaining] {
+				documents = append(documents, buffered.document)
+				checkpoint = buffered.checkpoint
+			}
 			s.buffer = append(s.buffer, batch[remaining:]...)
 			break
 		}
-		documents = append(documents, batch...)
+		for _, buffered := range batch {
+			documents = append(documents, buffered.document)
+			checkpoint = buffered.checkpoint
+		}
 	}
-	return SyncBatch{Documents: documents}, nil
+	return SyncBatch{Documents: documents, Checkpoint: checkpoint}, nil
 }
 
 // Close closes the GitHub sync session.
@@ -389,7 +424,7 @@ const (
 )
 
 // nextDocumentPage fetches one GitHub API page for sync.
-func (s *githubSyncSession) nextDocumentPage(ctx context.Context) ([]SourceDocument, error) {
+func (s *githubSyncSession) nextDocumentPage(ctx context.Context) ([]githubBufferedDocument, error) {
 	repo := s.repos[s.repoIndex]
 	switch s.stage {
 	case githubStagePRs:
@@ -401,6 +436,7 @@ func (s *githubSyncSession) nextDocumentPage(ctx context.Context) ([]SourceDocum
 		if err != nil {
 			return nil, err
 		}
+		docs = s.filterResumedDocuments(repo.FullName, githubStagePRs, s.page, docs)
 		if done {
 			s.advanceStage()
 		} else {
@@ -416,6 +452,7 @@ func (s *githubSyncSession) nextDocumentPage(ctx context.Context) ([]SourceDocum
 		if err != nil {
 			return nil, err
 		}
+		docs = s.filterResumedDocuments(repo.FullName, githubStageIssues, s.page, docs)
 		if done {
 			s.advanceRepo()
 		} else {
@@ -472,6 +509,7 @@ func (s *githubPruneSession) nextSlimPage(ctx context.Context) ([]SlimDocument, 
 func (s *githubSyncSession) advanceStage() {
 	s.stage = githubStageIssues
 	s.page = 1
+	s.clearResume()
 }
 
 // advanceRepo moves a GitHub session to the next repository.
@@ -479,6 +517,71 @@ func (s *githubSyncSession) advanceRepo() {
 	s.repoIndex++
 	s.stage = githubStagePRs
 	s.page = 1
+	s.clearResume()
+}
+
+// applyResume advances a sync session to the last committed GitHub page.
+func (s *githubSyncSession) applyResume(checkpoint *SyncCheckpoint) {
+	if checkpoint == nil || checkpoint.Cursor == "" {
+		return
+	}
+
+	var cursor githubSyncCursor
+	if err := json.Unmarshal([]byte(checkpoint.Cursor), &cursor); err != nil {
+		return
+	}
+	if cursor.Repo == "" || cursor.Stage == "" || cursor.Page <= 0 {
+		return
+	}
+	for index, repo := range s.repos {
+		if repo.FullName != cursor.Repo {
+			continue
+		}
+		s.repoIndex = index
+		s.stage = cursor.Stage
+		s.page = cursor.Page
+		s.resumeRepo = cursor.Repo
+		s.resumeStage = cursor.Stage
+		s.resumePage = cursor.Page
+		s.resumeOffset = cursor.Offset
+		s.resumeSourceID = firstNonEmpty(cursor.SourceID, checkpoint.SourceID)
+		return
+	}
+}
+
+// filterResumedDocuments drops documents through the committed checkpoint.
+func (s *githubSyncSession) filterResumedDocuments(repo, stage string, page int, candidates []githubBufferedDocument) []githubBufferedDocument {
+	if s.resumeRepo == "" || repo != s.resumeRepo || stage != s.resumeStage || page != s.resumePage {
+		return candidates
+	}
+	if s.resumeSourceID != "" {
+		for index, candidate := range candidates {
+			if candidate.sourceID == s.resumeSourceID {
+				s.clearResume()
+				return candidates[index+1:]
+			}
+		}
+	}
+	if s.resumeOffset <= 0 {
+		s.clearResume()
+		return candidates
+	}
+	filtered := candidates[:0]
+	for _, candidate := range candidates {
+		if candidate.offset > s.resumeOffset {
+			filtered = append(filtered, candidate)
+		}
+	}
+	s.clearResume()
+	return filtered
+}
+
+func (s *githubSyncSession) clearResume() {
+	s.resumeRepo = ""
+	s.resumeStage = ""
+	s.resumePage = 0
+	s.resumeOffset = 0
+	s.resumeSourceID = ""
 }
 
 // advanceStage moves a GitHub prune session from PRs to issues.
@@ -496,6 +599,40 @@ func (s *githubPruneSession) advanceRepo() {
 
 type githubRepo struct {
 	FullName string `json:"full_name"`
+}
+
+type githubSyncCursor struct {
+	Repo     string `json:"repo"`
+	Stage    string `json:"stage"`
+	Page     int    `json:"page"`
+	Offset   int    `json:"offset"`
+	SourceID string `json:"source_id"`
+}
+
+type githubBufferedDocument struct {
+	document   SourceDocument
+	checkpoint *SyncCheckpoint
+	offset     int
+	sourceID   string
+}
+
+func githubSyncCheckpoint(repo, stage string, page, offset int, doc SourceDocument) *SyncCheckpoint {
+	cursor, err := json.Marshal(githubSyncCursor{
+		Repo:     repo,
+		Stage:    stage,
+		Page:     page,
+		Offset:   offset,
+		SourceID: doc.SourceID,
+	})
+	if err != nil {
+		return nil
+	}
+	updatedAt := doc.UpdatedAt
+	return &SyncCheckpoint{
+		Cursor:    string(cursor),
+		SourceID:  doc.SourceID,
+		UpdatedAt: &updatedAt,
+	}
 }
 
 type githubPullRequest struct {
@@ -516,6 +653,9 @@ type githubPullRequest struct {
 // toSourceDocument converts a pull request into the syncer model.
 func (p githubPullRequest) toSourceDocument(repo string) SourceDocument {
 	body := []byte(p.Body)
+	labels := githubLabelNames(p.Labels)
+	user := p.User.metadata()
+	assignees := githubUsersMetadata(p.Assignees)
 	return SourceDocument{
 		SourceID:           p.HTMLURL,
 		SemanticIdentifier: fmt.Sprintf("%d:%s", p.Number, sanitizeGitHubName(p.Title, "md")),
@@ -529,10 +669,22 @@ func (p githubPullRequest) toSourceDocument(repo string) SourceDocument {
 			"state":       p.State,
 			"repo":        repo,
 			"merged":      strconv.FormatBool(p.MergedAt != nil),
-			"labels":      githubLabelNames(p.Labels),
-			"user":        p.User.metadata(),
-			"assignees":   githubUsersMetadata(p.Assignees),
+			"labels":      labels,
+			"user":        user,
+			"assignees":   assignees,
 		},
+		Fingerprint: stableFingerprint(map[string]any{
+			"type":       "PullRequest",
+			"url":        p.HTMLURL,
+			"title":      p.Title,
+			"body":       p.Body,
+			"state":      p.State,
+			"updated_at": p.UpdatedAt.UTC(),
+			"merged_at":  p.MergedAt,
+			"labels":     labels,
+			"user":       user,
+			"assignees":  assignees,
+		}),
 	}
 }
 
@@ -554,6 +706,9 @@ type githubIssue struct {
 // toSourceDocument converts an issue into the syncer model.
 func (i githubIssue) toSourceDocument(repo string) SourceDocument {
 	body := []byte(i.Body)
+	labels := githubLabelNames(i.Labels)
+	user := i.User.metadata()
+	assignees := githubUsersMetadata(i.Assignees)
 	return SourceDocument{
 		SourceID:           i.HTMLURL,
 		SemanticIdentifier: fmt.Sprintf("%d:%s", i.Number, sanitizeGitHubName(i.Title, "md")),
@@ -566,10 +721,22 @@ func (i githubIssue) toSourceDocument(repo string) SourceDocument {
 			"id":          strconv.Itoa(i.Number),
 			"state":       i.State,
 			"repo":        repo,
-			"labels":      githubLabelNames(i.Labels),
-			"user":        i.User.metadata(),
-			"assignees":   githubUsersMetadata(i.Assignees),
+			"labels":      labels,
+			"user":        user,
+			"assignees":   assignees,
 		},
+		Fingerprint: stableFingerprint(map[string]any{
+			"type":       "Issue",
+			"url":        i.HTMLURL,
+			"title":      i.Title,
+			"body":       i.Body,
+			"state":      i.State,
+			"updated_at": i.UpdatedAt.UTC(),
+			"closed_at":  i.ClosedAt,
+			"labels":     labels,
+			"user":       user,
+			"assignees":  assignees,
+		}),
 	}
 }
 
@@ -609,16 +776,31 @@ func githubLabelNames(labels []githubLabel) []string {
 			out = append(out, label.Name)
 		}
 	}
+	sort.Strings(out)
 	return out
 }
 
 // githubUsersMetadata returns metadata for users.
 func githubUsersMetadata(users []githubUser) []map[string]string {
+	users = append([]githubUser(nil), users...)
+	sort.Slice(users, func(i, j int) bool {
+		return githubUserSortKey(users[i]) < githubUserSortKey(users[j])
+	})
 	out := make([]map[string]string, 0, len(users))
 	for i := range users {
 		out = append(out, (&users[i]).metadata())
 	}
 	return out
+}
+
+func githubUserSortKey(user githubUser) string {
+	if user.Login != "" {
+		return user.Login
+	}
+	if user.Email != "" {
+		return user.Email
+	}
+	return user.Name
 }
 
 // hasNextPage reports whether a GitHub Link header has rel next.
@@ -676,7 +858,7 @@ func configBoolDefault(value any, fallback bool) bool {
 	return fallback
 }
 
-// sanitizeGitHubName mirrors Python's sanitized markdown filename intent.
+// sanitizeGitHubName mirrors Python's sanitized Markdown filename intent.
 func sanitizeGitHubName(name, extension string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
