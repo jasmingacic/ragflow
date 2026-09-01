@@ -18,9 +18,9 @@ import logging
 import os
 import re
 
-from api.db.db_models import File
+from api.db.db_models import Connector2Kb, Document, File, SyncLogs
 from api.db.joint_services.tenant_model_service import get_composite_model_name_by_ids, resolve_model_config, resolve_model_id
-from api.db.services.connector_service import Connector2KbService
+from api.db.services.connector_service import Connector2KbService, SyncLogsService
 from api.db.services.document_service import DocumentService, queue_raptor_o_graphrag_tasks
 from api.db.services.file2document_service import File2DocumentService
 from api.db.services.file_service import FileService
@@ -30,7 +30,7 @@ from api.db.services.tenant_model_service import TenantModelService
 from api.db.services.user_service import TenantService, UserService, UserTenantService
 from api.utils.api_utils import deep_merge, get_parser_config, remap_dictionary_keys, verify_embedding_availability
 from common import settings
-from common.constants import PAGERANK_FLD, FileSource, LLMType, RetCode, StatusEnum
+from common.constants import PAGERANK_FLD, FileSource, LLMType, RetCode, StatusEnum, TaskStatus
 from common.misc_utils import thread_pool_exec, thread_pool_exec_long_time
 from rag.advanced_rag.knowlege_compile.wiki import WIKI_PAGE_COMPILE_KWD
 
@@ -171,6 +171,15 @@ def _delete_datasets_sync(tenant_id: str, ids: list = None, delete_all: bool = F
     errors = []
     success_count = 0
     for kb_id, kb in kb_id_instance_pairs:
+        # Cancel this dataset's queued syncs before touching its documents.
+        # Tasks are only picked up while they are SCHEDULE, so cancelling stops
+        # every run that has not started yet; a sync already in flight is not
+        # interruptible, which is what the stranded-row sweep below covers.
+        SyncLogsService.filter_update(
+            [SyncLogs.kb_id == kb_id, SyncLogs.status.in_([TaskStatus.SCHEDULE, TaskStatus.RUNNING])],
+            {"status": TaskStatus.CANCEL},
+        )
+
         for doc in DocumentService.query(kb_id=kb_id):
             if not DocumentService.remove_document(doc, tenant_id):
                 errors.append(f"Remove document '{doc.id}' error for dataset '{kb_id}'")
@@ -207,6 +216,22 @@ def _delete_datasets_sync(tenant_id: str, ids: list = None, delete_all: bool = F
         if not KnowledgebaseService.delete_by_id(kb_id):
             errors.append(f"Delete dataset error for {kb_id}")
             continue
+
+        # Unwire the data sources only once the dataset is really gone, so a
+        # failed deletion above leaves a dataset that is still linked and still
+        # syncable. Left behind, these rows keep the connector scheduler queueing
+        # syncs against a kb_id that no longer resolves, and any document such a
+        # run writes outlives its dataset -- an invisible row that later reports
+        # a cross-KB id collision against whatever dataset is linked next.
+        Connector2KbService.filter_delete([Connector2Kb.kb_id == kb_id])
+        SyncLogsService.filter_delete([SyncLogs.kb_id == kb_id])
+
+        # Sweep anything the per-document loop could not see, including rows
+        # written by a sync that was already in flight when deletion started.
+        stranded = DocumentService.filter_delete([Document.kb_id == kb_id])
+        if stranded:
+            logging.warning("delete_datasets: removed %s stranded document rows for dataset %s", stranded, kb_id)
+
         success_count += 1
 
     if not errors:
@@ -477,7 +502,10 @@ def list_datasets(tenant_id: str, args: dict):
         user_dict = user_map.get(kb["tenant_id"], {})
         kb.update({"nickname": user_dict.get("nickname", ""), "tenant_avatar": user_dict.get("avatar", "")})
         if status_by_kb:
-            kb["parsing_status"] = status_by_kb.get(kb["id"], {})
+            # The documented contract (HTTP API + Python SDK references) places the
+            # counts at the top level of each dataset record, not under a nested
+            # "parsing_status" object.
+            kb.update(status_by_kb.get(kb["id"], {}))
         response_data_list.append(remap_dictionary_keys(kb))
 
     embed_model_names = get_composite_model_name_by_ids([m["embedding_model"] for m in response_data_list])
@@ -788,7 +816,9 @@ def delete_tags(dataset_id: str, tenant_id: str, tags: list[str]):
     from rag.nlp import search
 
     for t in tags:
-        settings.docStoreConn.update({"tag_kwd": t, "kb_id": [dataset_id]}, {"remove": {"tag_kwd": t}}, search.index_name(kb.tenant_id), dataset_id)
+        updated = settings.docStoreConn.update({"tag_kwd": t, "kb_id": [dataset_id]}, {"remove": {"tag_kwd": t}}, search.index_name(kb.tenant_id), dataset_id)
+        if callable(getattr(settings.docStoreConn, "db_type", None)) and settings.docStoreConn.db_type() == "gaussdb" and not updated:
+            return False, "Failed to update dataset tags in document store"
 
     return True, {}
 
@@ -991,7 +1021,11 @@ def rename_tag(dataset_id: str, tenant_id: str, from_tag: str, to_tag: str):
 
     from rag.nlp import search
 
-    settings.docStoreConn.update({"tag_kwd": from_tag, "kb_id": [dataset_id]}, {"remove": {"tag_kwd": from_tag.strip()}, "add": {"tag_kwd": to_tag}}, search.index_name(kb.tenant_id), dataset_id)
+    updated = settings.docStoreConn.update(
+        {"tag_kwd": from_tag, "kb_id": [dataset_id]}, {"remove": {"tag_kwd": from_tag.strip()}, "add": {"tag_kwd": to_tag}}, search.index_name(kb.tenant_id), dataset_id
+    )
+    if callable(getattr(settings.docStoreConn, "db_type", None)) and settings.docStoreConn.db_type() == "gaussdb" and not updated:
+        return False, "Failed to update dataset tags in document store"
 
     return True, {"from": from_tag, "to": to_tag}
 
@@ -1023,13 +1057,15 @@ async def search(dataset_id: str, tenant_id: str, req: dict):
     )
 
     page = int(req.get("page", 1))
-    size = int(req.get("size", 30))
+    size = int(req.get("page_size") or req.get("size", 30))
+    rerank_candidates_count = int(req.get("rerank_candidates_count", 64))
     question = req.get("question", "")
     doc_ids = req.get("doc_ids", [])
     use_kg = req.get("use_kg", False)
     similarity_threshold = float(req.get("similarity_threshold", 0.0))
     vector_similarity_weight = float(req.get("vector_similarity_weight", 0.3))
-    top = max(1, min(int(req.get("top_k", 1024)), 2048))
+    knn_top_k = max(1, min(int(req.get("knn_top_k", 1024)), 2048))
+    knn_num_candidates = int(req.get("knn_num_candidates", 2048))
     langs = req.get("cross_languages", [])
 
     if not KnowledgebaseService.accessible(dataset_id, tenant_id):
@@ -1058,17 +1094,18 @@ async def search(dataset_id: str, tenant_id: str, req: dict):
         meta_data_filter = search_config.get("meta_data_filter", {})
         similarity_threshold = float(search_config.get("similarity_threshold", similarity_threshold))
         vector_similarity_weight = float(search_config.get("vector_similarity_weight", vector_similarity_weight))
-        top = max(1, min(int(search_config.get("top_k", top)), 2048))
+        knn_top_k = max(1, min(int(search_config.get("top_k", knn_top_k)), 2048))
+        rerank_candidates_count = int(search_config.get("rerank_candidates_count", 100))
         use_kg = search_config.get("use_kg", use_kg)
         langs = search_config.get("cross_languages", langs)
         logging.debug(
-            "Dataset search loaded Search config: search_id=%s dataset_id=%s vector_similarity_weight=%s full_text_weight=%s similarity_threshold=%s top_k=%s",
+            "Dataset search loaded Search config: search_id=%s dataset_id=%s vector_similarity_weight=%s full_text_weight=%s similarity_threshold=%s knn_top_k=%s",
             search_id,
             dataset_id,
             vector_similarity_weight,
             1 - vector_similarity_weight,
             similarity_threshold,
-            top,
+            knn_top_k,
         )
         if meta_data_filter.get("method") in ["auto", "semi_auto"]:
             chat_id = search_config.get("chat_id", "")
@@ -1134,10 +1171,12 @@ async def search(dataset_id: str, tenant_id: str, req: dict):
         similarity_threshold,
         vector_similarity_weight,
         doc_ids=local_doc_ids,
-        top=top,
+        knn_top_k=knn_top_k,
+        knn_num_candidates=knn_num_candidates,
         rerank_mdl=rerank_mdl,
         rank_feature=labels,
         trace_id=search_id,
+        rerank_candidates_count=rerank_candidates_count,
     )
 
     if use_kg:
@@ -1261,7 +1300,11 @@ def check_embedding(dataset_id: str, tenant_id: str, req: dict):
             cid = ids[0]
             full_doc = docStoreConn.get(cid, index_nm, [kb_id]) or {}
             vec_field = _guess_vec_field(full_doc)
-            vec = _as_float_vec(full_doc.get(vec_field))
+            vec_valid = full_doc.get(f"{vec_field}_valid") if vec_field else None
+            if callable(getattr(docStoreConn, "db_type", None)) and docStoreConn.db_type() == "gaussdb" and vec_valid is False:
+                vec = []
+            else:
+                vec = _as_float_vec(full_doc.get(vec_field))
 
             out.append(
                 {
@@ -1399,13 +1442,15 @@ async def search_datasets(tenant_id: str, req: dict):
 
     kb_ids = req.get("dataset_ids", [])
     page = int(req.get("page", 1))
-    size = int(req.get("size", 30))
+    size = int(req.get("page_size") or req.get("size", 30))
+    rerank_candidates_count = int(req.get("rerank_candidates_count", 64))
     question = req.get("question", "")
     doc_ids = req.get("doc_ids", [])
     use_kg = req.get("use_kg", False)
     similarity_threshold = float(req.get("similarity_threshold", 0.0))
     vector_similarity_weight = float(req.get("vector_similarity_weight", 0.3))
-    top = max(1, min(int(req.get("top_k", 1024)), 2048))
+    knn_top_k = max(1, min(int(req.get("knn_top_k", 1024)), 2048))
+    knn_num_candidates = int(req.get("knn_num_candidates", 2048))
     langs = req.get("cross_languages", [])
 
     logging.debug(
@@ -1446,17 +1491,18 @@ async def search_datasets(tenant_id: str, req: dict):
         meta_data_filter = search_config.get("meta_data_filter", {})
         similarity_threshold = float(search_config.get("similarity_threshold", similarity_threshold))
         vector_similarity_weight = float(search_config.get("vector_similarity_weight", vector_similarity_weight))
-        top = max(1, min(int(search_config.get("top_k", top)), 2048))
+        knn_top_k = max(1, min(int(search_config.get("top_k", knn_top_k)), 2048))
+        rerank_candidates_count = int(search_config.get("rerank_candidates_count", 100))
         use_kg = search_config.get("use_kg", use_kg)
         langs = search_config.get("cross_languages", langs)
         logging.debug(
-            "Dataset search loaded Search config: search_id=%s dataset_ids=%s vector_similarity_weight=%s full_text_weight=%s similarity_threshold=%s top_k=%s",
+            "Dataset search loaded Search config: search_id=%s dataset_ids=%s vector_similarity_weight=%s full_text_weight=%s similarity_threshold=%s knn_top_k=%s",
             search_id,
             kb_ids,
             vector_similarity_weight,
             1 - vector_similarity_weight,
             similarity_threshold,
-            top,
+            knn_top_k,
         )
         if meta_data_filter.get("method") in ["auto", "semi_auto"]:
             chat_id = search_config.get("chat_id", "")
@@ -1526,11 +1572,14 @@ async def search_datasets(tenant_id: str, req: dict):
         similarity_threshold,
         vector_similarity_weight,
         doc_ids=local_doc_ids,
-        top=top,
+        knn_top_k=knn_top_k,
+        knn_num_candidates=knn_num_candidates,
         rerank_mdl=rerank_mdl,
+        highlight=req.get("highlight", False),
         rank_feature=labels,
         trace_id=search_id,
         must_not=None if req.get("include_knowledge_compilation", True) else {"exists": "compile_kwd"},
+        rerank_candidates_count=rerank_candidates_count,
     )
 
     if use_kg:
@@ -1542,7 +1591,6 @@ async def search_datasets(tenant_id: str, req: dict):
         except Exception:
             logging.warning("search_datasets KG retrieval failed: datasets=%s tenant=%s", kb_ids, tenant_id, exc_info=True)
     ranks["chunks"] = settings.retriever.retrieval_by_children(ranks["chunks"], tenant_ids)
-    ranks["total"] = len(ranks["chunks"])
 
     for c in ranks["chunks"]:
         c.pop("vector", None)
@@ -1865,7 +1913,7 @@ async def get_dataset_structure(dataset_id: str, tenant_id: str, kind: str, keyw
         return False, f"Unsupported structure kind: {kind!r}. Expected one of: graph, mindmap, timeline, session_essence, session_graph."
 
     _, kb = KnowledgebaseService.get_by_id(dataset_id)
-    empty = {"kind": kind, "templates": []}
+    empty = {"kind": kind, "templates": [], "total_entities": 0, "total_relations": 0, "returned_entities": 0, "returned_relations": 0}
 
     pack = _compiled_index_or_none(kb.tenant_id, dataset_id)
     if pack is None:
@@ -1994,6 +2042,25 @@ async def get_dataset_structure(dataset_id: str, tenant_id: str, kind: str, keyw
             template_scope_by_id[tid] = "doc"
             kind_template_ids.append(tid)
 
+    template_scopes: dict[str, dict] = {}
+    total_entities = 0
+    total_relations = 0
+    for tid in kind_template_ids:
+        scope_kwd = template_scope_by_id.get(tid, "dataset")
+        scope = {"compilation_template_ids": [tid], "scope_kwd": [scope_kwd]}
+        if scope_kwd == "doc":
+            scope["doc_id"] = sorted(active_doc_ids)
+        template_scopes[tid] = scope
+        try:
+            _, entity_total = await sgc.graph_search(index_nm, dataset_id, ["id"], dict(scope, knowledge_graph_kwd=["entity"]), OrderByExpr(), 1)
+            _, relation_total = await sgc.graph_search(index_nm, dataset_id, ["id"], dict(scope, knowledge_graph_kwd=["relation"]), OrderByExpr(), 1)
+            total_entities += entity_total
+            total_relations += relation_total
+        except Exception:
+            logging.exception("get_dataset_structure: bucket count failed for kb=%s template=%s", dataset_id, tid)
+    empty["total_entities"] = total_entities
+    empty["total_relations"] = total_relations
+
     # Detect datasets that have ONLY the legacy dataset_graph blob (no
     # entity/relation rows yet) so the fallback path below handles them.
     if not kind_template_ids and not has_templateless:
@@ -2067,20 +2134,24 @@ async def get_dataset_structure(dataset_id: str, tenant_id: str, kind: str, keyw
         bucket = dict(bucket_meta)
         bucket["entities"] = kw_entities
         bucket["relations"] = kw_relations
-        return True, {"kind": kind, "templates": [bucket]}
+        return True, {
+            "kind": kind,
+            "templates": [bucket],
+            "total_entities": total_entities,
+            "total_relations": total_relations,
+            "returned_entities": len(kw_entities),
+            "returned_relations": len(kw_relations),
+        }
 
     # ── normal mode: per-template subgraph sampling from raw KB-wide rows. ──
     templates_out: list[dict] = []
     for tid in kind_template_ids:
         scope_kwd = template_scope_by_id.get(tid, "dataset")
         try:
-            scope = {"compilation_template_ids": [tid], "scope_kwd": [scope_kwd]}
-            if scope_kwd == "doc":
-                scope["doc_id"] = sorted(active_doc_ids)
             entities, relations = await sgc.build_bucket(
                 index_nm,
                 dataset_id,
-                scope,
+                template_scopes[tid],
                 excluded_doc_ids=dataset_excluded_doc_ids if scope_kwd == "dataset" else disabled_doc_ids,
             )
         except Exception:
@@ -2130,14 +2201,19 @@ async def get_dataset_structure(dataset_id: str, tenant_id: str, kind: str, keyw
                     continue
                 reconstructed_compile_kwds.add(compile_kwd)
                 try:
+                    legacy_scope = {"compile_kwd": [compile_kwd], "doc_id": sorted(active_doc_ids)}
+                    _, entity_total = await sgc.graph_search(index_nm, dataset_id, ["id"], dict(legacy_scope, knowledge_graph_kwd=["entity"]), OrderByExpr(), 1)
+                    _, relation_total = await sgc.graph_search(index_nm, dataset_id, ["id"], dict(legacy_scope, knowledge_graph_kwd=["relation"]), OrderByExpr(), 1)
                     entities, relations = await sgc.build_bucket(
                         index_nm,
                         dataset_id,
-                        {"compile_kwd": [compile_kwd], "doc_id": sorted(active_doc_ids)},
+                        legacy_scope,
                         excluded_doc_ids=disabled_doc_ids,
                     )
                 except Exception:
                     continue
+                total_entities += entity_total
+                total_relations += relation_total
                 legacy_bucket["entities"].extend(entities)
                 legacy_bucket["relations"].extend(relations)
                 continue
@@ -2147,15 +2223,26 @@ async def get_dataset_structure(dataset_id: str, tenant_id: str, kind: str, keyw
                 continue
             if not isinstance(graph, dict):
                 continue
-            legacy_bucket["entities"].extend(item for item in (graph.get("entities") or []) if isinstance(item, dict))
-            legacy_bucket["relations"].extend(item for item in (graph.get("relations") or []) if isinstance(item, dict))
+            legacy_entities = [item for item in (graph.get("entities") or []) if isinstance(item, dict)]
+            legacy_relations = [item for item in (graph.get("relations") or []) if isinstance(item, dict)]
+            total_entities += len(legacy_entities)
+            total_relations += len(legacy_relations)
+            legacy_bucket["entities"].extend(legacy_entities)
+            legacy_bucket["relations"].extend(legacy_relations)
         if resolved_kind in {"knowledge_graph", "mind_map", "timeline"}:
             legacy_bucket["entities"] = sgc.filter_entities_with_relations(legacy_bucket["entities"], legacy_bucket["relations"])
         if legacy_bucket["entities"] or legacy_bucket["relations"]:
             if resolved_kind not in {"knowledge_graph", "mind_map", "timeline"} or legacy_bucket["entities"]:
                 templates_out.append(legacy_bucket)
 
-    return True, {"kind": kind, "templates": templates_out}
+    return True, {
+        "kind": kind,
+        "templates": templates_out,
+        "total_entities": total_entities,
+        "total_relations": total_relations,
+        "returned_entities": sum(len(template["entities"]) for template in templates_out),
+        "returned_relations": sum(len(template["relations"]) for template in templates_out),
+    }
 
 
 # ── artifacts/alteration: per-``kind`` provenance & eligibility mapping ──
@@ -2637,46 +2724,13 @@ async def list_wiki_topics(
     if not counts:
         return True, {"total": 0, "items": []}
 
-    # Resolve display metadata (title/slug) from the topic landing pages; fall
-    # back to the raw topic name when a topic has no ``page_type="topic"`` row.
-    meta: dict[str, dict] = {}
-    try:
-        meta_fields = ["topic_kwd", "title_kwd", "slug_kwd"]
-        _BATCH = 1000
-        _offset = 0
-        while True:
-            meta_res = settings.docStoreConn.search(
-                select_fields=meta_fields,
-                highlight_fields=[],
-                condition={"compile_kwd": [WIKI_PAGE_COMPILE_KWD], "page_type_kwd": ["topic"]},
-                match_expressions=[],
-                order_by=OrderByExpr(),
-                offset=_offset,
-                limit=_BATCH,
-                index_names=index_nm,
-                knowledgebase_ids=[dataset_id],
-            )
-            rows = settings.docStoreConn.get_fields(meta_res, meta_fields) or {}
-            if not rows:
-                break
-            for row in rows.values():
-                t = _scalar(row.get("topic_kwd"))
-                if t:
-                    meta[t] = {
-                        "title": _scalar(row.get("title_kwd")) or t,
-                        "slug": _scalar(row.get("slug_kwd")) or t,
-                    }
-            _offset += _BATCH
-    except Exception:
-        logging.exception("list_wiki_topics: topic metadata lookup failed for kb=%s", dataset_id)
-
     # Rank topics by page count (descending), then title for a stable order.
     ranked = sorted(
         (
             {
                 "topic": t,
-                "title": (meta.get(t) or {}).get("title") or t,
-                "slug": (meta.get(t) or {}).get("slug") or t,
+                "title": t.rsplit("/", 1)[-1],
+                "slug": t,
                 "page_count": c,
             }
             for t, c in counts.items()
@@ -3678,7 +3732,7 @@ async def generate_nav(
             continue
         try:
             await upsert_dataset_nav_doc(
-                tenant_id=tenant_id,
+                tenant_id=kb.tenant_id,
                 kb_id=dataset_id,
                 doc_id=doc_id,
                 summary_or_tree=summary,
@@ -3867,7 +3921,7 @@ async def _search_layers_chunks(tenant_id, dataset_id, query, top_k, embd_mdl, k
 
     kwargs = {}
     if top_k is not None:
-        kwargs["top"] = top_k
+        kwargs["knn_top_k"] = top_k
     if doc_scope:
         kwargs["doc_ids"] = [str(d) for d in doc_scope if str(d).strip()]
 
@@ -4564,20 +4618,55 @@ async def get_wiki_graph(
       then pull the ``to`` entities. Capped at
       ``_WIKI_GRAPH_MAX_LOADING_ENTITY`` for hub-node safety.
 
-    Returns ``(True, {"entities": [...], "relations": [...]})`` shaped
-    exactly as the frontend ``ForceGraph`` adapter consumes, or
+    Returns ``(True, {"entities": [...], "relations": [...], "total_entities": int,
+    "total_relations": int, "returned_entities": int, "returned_relations": int})``
+    shaped exactly as the frontend ``ForceGraph`` adapter consumes, or
     ``(False, message)`` on authorization failure.
     """
     if not KnowledgebaseService.accessible(dataset_id, tenant_id):
         return False, "no authorization"
     _, kb = KnowledgebaseService.get_by_id(dataset_id)
 
-    empty = {"entities": [], "relations": []}
+    total_entities = 0
+    total_relations = 0
+
+    def _response(response_entities: list[dict], response_relations: list[dict]) -> dict:
+        return {
+            "entities": response_entities,
+            "relations": response_relations,
+            "total_entities": total_entities,
+            "total_relations": total_relations,
+            "returned_entities": len(response_entities),
+            "returned_relations": len(response_relations),
+        }
 
     pack = _wiki_index_or_none(kb.tenant_id, dataset_id)
     if pack is None:
-        return True, empty
+        return True, _response([], [])
     index_nm, _ = pack
+
+    from common.doc_store.doc_store_base import OrderByExpr
+
+    try:
+        for compile_kwd, count_name in ((_WIKI_GRAPH_ENTITY_KWD, "entities"), (_WIKI_GRAPH_RELATION_KWD, "relations")):
+            res = await thread_pool_exec(
+                settings.docStoreConn.search,
+                ["id"],
+                [],
+                {"compile_kwd": [compile_kwd]},
+                [],
+                OrderByExpr(),
+                0,
+                1,
+                index_nm,
+                [dataset_id],
+            )
+            if count_name == "entities":
+                total_entities = int(settings.docStoreConn.get_total(res) or 0)
+            else:
+                total_relations = int(settings.docStoreConn.get_total(res) or 0)
+    except Exception:
+        logging.exception("get_wiki_graph: graph count failed for kb=%s", dataset_id)
 
     keywords = (keywords or "").strip()
     # Entity budget: caller-overridable, clamped to a sane range so a bad param
@@ -4629,7 +4718,7 @@ async def get_wiki_graph(
                 dataset_id,
                 center_slug,
             )
-            return True, empty
+            return True, _response([], [])
 
         for row in (field_map or {}).values():
             payload = _wiki_entity_payload(row)
@@ -4640,7 +4729,7 @@ async def get_wiki_graph(
         if center_slug not in entities:
             # Caller pointed at a slug that doesn't exist; return empty
             # rather than a confusing partial graph.
-            return True, empty
+            return True, _response([], [])
 
         # Outgoing edges from the centre, capped by MAX_LOADING_ENTITY.
         try:
@@ -4655,7 +4744,7 @@ async def get_wiki_graph(
                 dataset_id,
                 center_slug,
             )
-            return True, {"entities": list(entities.values()), "relations": []}
+            return True, _response(list(entities.values()), [])
 
         to_slugs: list[str] = []
         for row in (rel_map or {}).values():
@@ -4692,10 +4781,7 @@ async def get_wiki_graph(
                 if payload and len(entities) < cap * 2:
                     _add_entity(payload)
 
-        return True, {
-            "entities": list(entities.values()),
-            "relations": relations,
-        }
+        return True, _response(list(entities.values()), relations)
 
     # ---- Flow A — overview, top-weight paged with cumulative budget. ---
     cumulative_weight = 0
@@ -4801,10 +4887,7 @@ async def get_wiki_graph(
             break
         page += 1
 
-    return True, {
-        "entities": list(entities.values()),
-        "relations": relations,
-    }
+    return True, _response(list(entities.values()), relations)
 
 
 async def clear_wiki(dataset_id: str, tenant_id: str):

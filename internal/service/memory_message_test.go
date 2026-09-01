@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -35,6 +38,60 @@ func TestMemoryIndexNameMatchesPythonPrefix(t *testing.T) {
 	t.Setenv(common.EnvESIndexPrefix, "legacy")
 	if got := memoryIndexName("tenant-1"); got != "memory_legacy_tenant-1" {
 		t.Fatalf("memoryIndexName() with prefix = %q", got)
+	}
+}
+
+// The FusionExpr weight slots are [text, vector], and keywords_similarity_weight is the
+// text weight, so it belongs in slot 0. Both this and Python's
+// api/db/joint_services/memory_message_service.py emitted the pair reversed, which handed
+// every memory search the inverse of the requested hybrid balance. The weights below are
+// asymmetric on purpose: an even split cannot tell the two orders apart.
+func TestMemoryFusionWeightsPutTheKeywordWeightInTheTextSlot(t *testing.T) {
+	for _, keywordsSimilarityWeight := range []float64{0.7, 0.9, 0.2} {
+		weights := memoryFusionWeights(keywordsSimilarityWeight)
+		parts := strings.Split(weights, ",")
+		if len(parts) != 2 {
+			t.Fatalf("memoryFusionWeights(%v) = %q, want two comma-separated weights", keywordsSimilarityWeight, weights)
+		}
+
+		textWeight, err := strconv.ParseFloat(parts[0], 64)
+		if err != nil {
+			t.Fatalf("text weight %q: %v", parts[0], err)
+		}
+		vectorWeight, err := strconv.ParseFloat(parts[1], 64)
+		if err != nil {
+			t.Fatalf("vector weight %q: %v", parts[1], err)
+		}
+
+		// Compared with a tolerance, not for equality: the slot each weight lands in is
+		// the invariant, and %.2f is as valid a rendering here as %.6g.
+		if math.Abs(textWeight-keywordsSimilarityWeight) > 1e-9 {
+			t.Fatalf("text weight = %v, want %v (from %q)", textWeight, keywordsSimilarityWeight, weights)
+		}
+		if math.Abs(vectorWeight-(1-keywordsSimilarityWeight)) > 1e-9 {
+			t.Fatalf("vector weight = %v, want %v (from %q)", vectorWeight, 1-keywordsSimilarityWeight, weights)
+		}
+	}
+}
+
+// The slot test above deliberately accepts any numeric rendering, so nothing there
+// would notice a quiet return to %g. This pins the other half: the strings below are
+// what Python's :g emits for the same inputs in
+// api/db/joint_services/memory_message_service.py, so a regression that reintroduces
+// 0.30000000000000004 on the Go side turns this red. 0.1234567 is here because it is
+// the case that actually exercises the six-digit rounding.
+func TestMemoryFusionWeightsMatchesPythonFormatting(t *testing.T) {
+	for _, testCase := range []struct {
+		keywordsSimilarityWeight float64
+		want                     string
+	}{
+		{keywordsSimilarityWeight: 0.7, want: "0.7,0.3"},
+		{keywordsSimilarityWeight: 0.9, want: "0.9,0.1"},
+		{keywordsSimilarityWeight: 0.1234567, want: "0.123457,0.876543"},
+	} {
+		if got := memoryFusionWeights(testCase.keywordsSimilarityWeight); got != testCase.want {
+			t.Fatalf("memoryFusionWeights(%v) = %q, want %q", testCase.keywordsSimilarityWeight, got, testCase.want)
+		}
 	}
 }
 
@@ -132,6 +189,12 @@ func setupMemoryMessageTestDB(t *testing.T) {
 func TestForgetMessageKeepsCompanionFieldForNonOceanBaseEngines(t *testing.T) {
 	setupMemoryMessageTestDB(t)
 
+	// Pin the clock to a fixed instant in a fixed non-UTC location so the
+	// server-local assertions below hold on any host, including UTC CI
+	// runners.
+	pinned := time.Date(2026, 8, 20, 10, 5, 0, 0, time.FixedZone("UTC+8", 8*3600))
+	pinMemoryNow(t, pinned)
+
 	if err := dao.DB.Create(&entity.Memory{
 		ID:          "memory-1",
 		Name:        "Test memory",
@@ -171,10 +234,17 @@ func TestForgetMessageKeepsCompanionFieldForNonOceanBaseEngines(t *testing.T) {
 			}
 			if forgetAt, ok := docEngine.updateValue["forget_at"].(string); !ok || forgetAt == "" {
 				t.Fatalf("forget_at = %#v, want non-empty string", docEngine.updateValue["forget_at"])
+			} else if want := "2026-08-20 10:05:00"; forgetAt != want {
+				// forget_at must be the server-local wall clock, not a
+				// UTC-shifted one (which would be "2026-08-20 02:05:00").
+				t.Fatalf("forget_at = %q, want server-local wall clock %q", forgetAt, want)
 			}
-			_, hasCompanion := docEngine.updateValue["forget_at_flt"]
+			companion, hasCompanion := docEngine.updateValue["forget_at_flt"]
 			if hasCompanion != test.wantForgetAtCompanion {
 				t.Fatalf("forget_at_flt present = %t, want %t", hasCompanion, test.wantForgetAtCompanion)
+			}
+			if hasCompanion && companion != pinned.UnixMilli() {
+				t.Fatalf("forget_at_flt = %v, want Unix milliseconds of the stamped instant %d", companion, pinned.UnixMilli())
 			}
 		})
 	}
