@@ -46,13 +46,21 @@ jobs:
               .github/workflows/release-build.yml \
               .github/workflows/sync-upstream.yml 2>/dev/null || true
 
-            # For any remaining conflicts, take upstream
+            # For any remaining conflicts, take upstream. A conflicted path can
+            # have no "theirs" version (modify/delete: upstream deleted it) —
+            # checkout --theirs fails there, so fall back to deleting the file.
             REMAINING=$(git diff --name-only --diff-filter=U)
             if [ -n "$REMAINING" ]; then
               echo "Taking upstream for remaining conflicts:"
               echo "$REMAINING"
-              echo "$REMAINING" | xargs git checkout --theirs --
-              echo "$REMAINING" | xargs git add --
+              printf '%s\n' "$REMAINING" | while IFS= read -r f; do
+                if git checkout --theirs -- "$f" 2>/dev/null; then
+                  git add -- "$f"
+                else
+                  echo "No upstream version of $f (deleted upstream), removing"
+                  git rm -f -- "$f"
+                fi
+              done
             fi
 
             git commit -m "Merge upstream/main with conflict resolution"
