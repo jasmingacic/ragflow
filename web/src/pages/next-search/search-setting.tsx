@@ -412,7 +412,10 @@ function SearchSetting({
             />
             {rerankModelEnabled && (
               <>
-                <RerankFormFields prefix={'search_config.'}></RerankFormFields>
+                <RerankFormFields
+                  prefix={'search_config.'}
+                  required
+                ></RerankFormFields>
               </>
             )}
             {/* AI Summary */}
@@ -432,12 +435,9 @@ function SearchSetting({
               )}
             />
             {aiSummaryEnabled && (
-              // <LlmSettingFieldItems
-              //   prefix="search_config.llm_setting"
-              //   options={aiSummeryModelOptions}
-              // ></LlmSettingFieldItems>
               <LlmSettingFieldItems
                 prefix="search_config.llm_setting"
+                llmRequired
                 showFields={[
                   'temperature',
                   'top_p',
