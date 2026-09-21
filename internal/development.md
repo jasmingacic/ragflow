@@ -201,19 +201,44 @@ missing from the model directory.
 docker compose -f docker/docker-compose-base.yml --profile ragflow-go --profile infinity up -d
 ```
 
+- Point the host-run Go binaries at Kvrocks. Kvrocks is published on
+  `127.0.0.1:6379` (loopback, reusing the conventional Redis port; the Go
+  deployment disables the Valkey/Redis service so there is no clash). Export these
+  before running `./bin/ragflow_server ...` on the host, or load them from
+  `docker/.env-go`:
+```bash
+export KVROCKS_HOST=127.0.0.1
+export KVROCKS_PORT=6379
+```
+  In docker the Go services override these to `kvrocks:6379` automatically
+  (see `docker-compose-go.yml`). If Kvrocks is unreachable at startup the
+  process fails fast with `failed to connect to Kvrocks`.
+
 
 - Start RAGFlow
-Note: admin server must be started first; otherwise, api server will encounter errors when sending heartbeats.
+Note: Database migrations must complete before starting any server mode.
+After migration, start the admin server before the API and ingestor servers;
+otherwise, they will encounter errors when sending heartbeats.
+
+```bash
+# Run database migrations (standalone action; does not start a server)
+./bin/ragflow_server --migrate
+```
+`--migrate` writes the database version marker that server modes check on
+startup, and a development branch regularly records a version for a release
+that has not been tagged yet — a build from a `v0.27.x` commit that writes
+`v1.0.0-rc1.dev1` refuses to start afterwards, because the recorded version
+looks newer than the code. Set `RAGFLOW_DEV_MODE=true` (see `docker/.env`) for
+such a checkout: it turns the "code version must not be older than the database
+version" guard off. Leave it off in production.
+
 
 ```bash
 # Start admin server
 ./bin/ragflow_server --admin
 ```
 
-```bash
-# Start admin server and migrate database
-./bin/ragflow_server --admin --migrate
-```
+
 
 ```bash
 # Start RAGFlow server
@@ -662,11 +687,6 @@ RAGFlow(api/default)> CREATE CHUNK STORE FOR DATASET 'test' VECTOR SIZE 384
 - Update a chunk's content
 ```
 RAGFlow(api/default)> UPDATE CHUNK 'deb165dc6a732a64' OF DOCUMENT 'bbe55942535e11f1bc5184ba59049aa3' IN DATASET 'test' SET '{"content": "Updated chunk content here", "important_keywords": ["keyword1", "keyword2"], "questions": ["What is this about?", "Why is it important?"], "available": true, "tag_kwd": ["tag5", "tag2"]}'
-```
-
-- Remove tags from a dataset
-```
-RAGFlow(api/default)> REMOVE TAGS 'tag1', 'tag2' FROM DATASET 'test'
 ```
 
 - Remove specific chunks from a document

@@ -3,15 +3,19 @@ import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/input';
 import { Spin } from '@/components/ui/spin';
 import { TreeView } from '@/components/ui/tree-view';
+import { GenerateStatus } from '@/constants/knowledge';
+import { ITraceInfo, useGenerateStatus } from '@/hooks/use-dataset-generate';
 import {
   DatasetNavList,
   DatasetNavNode,
 } from '@/interfaces/database/dataset-nav';
 import { IStructureGraphTemplate } from '@/interfaces/database/document-structure';
+import { cn } from '@/lib/utils';
 import { useIsGoBackend } from '@/utils/backend-variant';
-import { FileText, Folder, Trash2 } from 'lucide-react';
-import { useCallback, useMemo } from 'react';
+import { CircleX, FileText, Folder, Loader2, Trash2 } from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { UpdateLogSheet } from './update-log-sheet';
 import { buildNavTreeData, NavEntityClickHandler } from './utils/nav-tree';
 
 type NavNodeDeleteActionProps = {
@@ -73,11 +77,18 @@ type NavTreeLeftPanelProps = {
   navLoading: boolean;
   navError?: boolean;
   keywords: string;
+  // The debounced filter applied to the nav/children/graph requests. Used as
+  // the TreeView key so a filter change remounts the tree: expansion state is
+  // uncontrolled per node and onExpand only fires on opening, so without a
+  // remount an already-open node whose cached children were dropped would sit
+  // on the loading placeholder forever.
+  activeKeywords: string;
   childrenMap: Record<string, DatasetNavNode[]>;
   childrenErrorParents?: Record<string, boolean>;
   structureMap: Record<string, IStructureGraphTemplate[]>;
   deleteNavLoading: boolean;
   deleteNodeLoading: boolean;
+  traceData?: ITraceInfo;
   onKeywordsChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onNodeClick: (node: DatasetNavNode, parentName: string | null) => void;
   onNodeExpand: (node: DatasetNavNode) => void;
@@ -91,11 +102,13 @@ export function NavTreeLeftPanel({
   navLoading,
   navError = false,
   keywords,
+  activeKeywords,
   childrenMap,
   childrenErrorParents = {},
   structureMap,
   deleteNavLoading,
   deleteNodeLoading,
+  traceData,
   onKeywordsChange,
   onNodeClick,
   onNodeExpand,
@@ -105,6 +118,21 @@ export function NavTreeLeftPanel({
 }: NavTreeLeftPanelProps) {
   const { t } = useTranslation();
   const isGo = useIsGoBackend();
+
+  const { status: compileStatus } = useGenerateStatus(traceData);
+  const [logSheetOpen, setLogSheetOpen] = useState(false);
+  // Go: an incremental compile is running while a tree is already on screen —
+  // surface it as a log entry point in the header (the full-view placeholder
+  // covers the first compile, when no tree exists).
+  const compiling =
+    isGo &&
+    (compileStatus === GenerateStatus.Running ||
+      compileStatus === GenerateStatus.Failed);
+  const compileFailed = compiling && compileStatus === GenerateStatus.Failed;
+
+  const handleOpenLogSheet = useCallback(() => {
+    setLogSheetOpen(true);
+  }, []);
 
   const renderNavActions = useCallback(
     (node: DatasetNavNode, parentName: string | null) => (
@@ -168,6 +196,25 @@ export function NavTreeLeftPanel({
             </Button>
           </ConfirmDeleteDialog>
         )}
+        {compiling && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleOpenLogSheet}
+            data-testid="nav-compile-log-trigger"
+            className={cn({ 'text-state-error': compileFailed })}
+          >
+            {compileFailed ? <CircleX /> : <Loader2 className="animate-spin" />}
+            <span
+              className="max-w-56 truncate"
+              title={compileFailed ? traceData?.compilationError : undefined}
+            >
+              {compileFailed
+                ? traceData?.compilationError || t('message.operated')
+                : t('knowledgeCompilation.compiling')}
+            </span>
+          </Button>
+        )}
       </section>
 
       <div className="px-3 pt-2">
@@ -195,6 +242,7 @@ export function NavTreeLeftPanel({
               </div>
             ) : null}
             <TreeView
+              key={activeKeywords}
               data={treeData}
               expandOnRowClick={false}
               defaultNodeIcon={Folder}
@@ -203,6 +251,13 @@ export function NavTreeLeftPanel({
           </>
         )}
       </div>
+
+      <UpdateLogSheet
+        open={logSheetOpen}
+        onOpenChange={setLogSheetOpen}
+        data={traceData}
+        title={t('knowledgeCompilation.navLogTitle')}
+      />
     </aside>
   );
 }

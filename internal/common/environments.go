@@ -19,6 +19,7 @@ package common
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -30,9 +31,40 @@ func GetEnvSmall(key string) string {
 	return strings.ToLower(GetEnv(key))
 }
 
+// SandboxArtifactBucket is the object-storage bucket that holds
+// code-exec sandbox artifacts, served back through
+// /api/v1/documents/artifact/<name>.
+func SandboxArtifactBucket() string {
+	if bucket := GetEnv(EnvSandboxArtifactBucket); bucket != "" {
+		return bucket
+	}
+	return "sandbox-artifacts"
+}
+
+// SandboxArtifactContentTypes maps the sandbox-artifact file extensions
+// the /api/v1/documents/artifact route serves to response content
+// types. Artifact publication derives storage-name extensions from the
+// same table so every published URL resolves to a servable type.
+var SandboxArtifactContentTypes = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".svg":  "image/svg+xml",
+	".pdf":  "application/pdf",
+	".csv":  "text/csv",
+	".json": "application/json",
+	".html": "text/html",
+}
+
+func IsLLMDebugEnabled() bool {
+	enabled, err := strconv.ParseBool(strings.TrimSpace(GetEnv(EnvLLMDebug)))
+	return err == nil && enabled
+}
+
 // environment variables
 const (
 	EnvTensorrtDLAServer                 = "TENSORRT_DLA_SVR"
+	EnvRAGFlowDevMode                    = "RAGFLOW_DEV_MODE"
 	EnvRAGFlowTTSCacheTTLSeconds         = "RAGFLOW_TTS_CACHE_TTL_SECONDS"
 	EnvRerankTokenLimitMode              = "RERANK_TOKEN_LIMIT_MODE"
 	EnvComponentExecTimeout              = "COMPONENT_EXEC_TIMEOUT"
@@ -99,6 +131,7 @@ const (
 	EnvOpenAIAPIKey                      = "OPENAI_API_KEY"
 	EnvOpenAIBaseURL                     = "OPENAI_BASE_URL"
 	EnvOpenAIModel                       = "OPENAI_MODEL"
+	EnvLLMDebug                          = "LLM_DEBUG"
 	EnvStageHandExtractSchemaJSON        = "STAGEHAND_EXTRACT_SCHEMA_JSON"
 	EnvSandboxProviderType               = "SANDBOX_PROVIDER_TYPE"
 	EnvSandboxExecutorManagerURL         = "SANDBOX_EXECUTOR_MANAGER_URL"

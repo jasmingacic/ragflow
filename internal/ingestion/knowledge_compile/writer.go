@@ -31,7 +31,10 @@ import (
 	"ragflow/internal/common"
 	"ragflow/internal/engine"
 	"ragflow/internal/engine/types"
+	"ragflow/internal/entity"
 	kccommon "ragflow/internal/ingestion/component/knowledge_compiler/common"
+	"ragflow/internal/service/file"
+	"ragflow/internal/tokenizer"
 	"ragflow/internal/utility"
 )
 
@@ -130,7 +133,12 @@ type StructureBucket struct {
 // obtained via engine.Get(); the storage schema lives behind the engine
 // abstraction rather than in this package.
 type engineWriter struct {
-	eng engine.DocEngine
+	eng           engine.DocEngine
+	commitService pageCommitter
+}
+
+type pageCommitter interface {
+	RecordPageEdit(context.Context, file.PageEditCommitInput) (*entity.FileCommit, error)
 }
 
 func (w engineWriter) DeleteMergedWikiPages(ctx context.Context, tenant, kb string, ids []string) error {
@@ -185,6 +193,20 @@ const writeMergedBatchSize = 200
 func (w engineWriter) WriteMerged(ctx context.Context, tenant, kb string, products []kccommon.Product) error {
 	if len(products) == 0 {
 		return nil
+	}
+	var existingWikiPageContent map[string]string
+	canRecordWikiCommits := w.commitService != nil
+	if canRecordWikiCommits {
+		var err error
+		existingWikiPageContent, err = w.loadWikiPageContent(ctx, tenant, kb, products)
+		if err != nil {
+			// The compiled page write must not fail because the audit lookup is
+			// unavailable. Skip auditing this batch rather than recording an
+			// incorrect add commit for a page whose old content is unknown.
+			common.Warn("knowledge_compile: failed to load Wiki page content for version history",
+				zap.String("kb_id", kb), zap.Error(err))
+			canRecordWikiCommits = false
+		}
 	}
 	// Dataset-level telemetry: break the merged set down by compile_kwd so a
 	// missing wiki_page at query time can be traced to "WriteMerged never
@@ -264,7 +286,178 @@ func (w engineWriter) WriteMerged(ctx context.Context, tenant, kb string, produc
 			return err
 		})
 	}
-	return runCompilerJobs(ctx, jobs)
+	if err := runCompilerJobs(ctx, jobs); err != nil {
+		return err
+	}
+	if canRecordWikiCommits {
+		w.recordWikiPageCommits(ctx, kb, products, existingWikiPageContent)
+	}
+	return nil
+}
+
+type wikiPageCommitTarget struct {
+	key      string
+	fullSlug string
+	bareSlug string
+	pageType string
+}
+
+// loadWikiPageContent returns the currently persisted content for the page
+// products in products. A missing key means that this is the page's first
+// generated version, while an empty value means an existing page currently has
+// empty content; callers must preserve that distinction.
+func (w engineWriter) loadWikiPageContent(ctx context.Context, tenant, kb string, products []kccommon.Product) (map[string]string, error) {
+	eng := w.eng
+	if eng == nil {
+		eng = engine.Get()
+	}
+	result := make(map[string]string)
+	if eng == nil {
+		return result, nil
+	}
+
+	pageSlugs := make(map[string]struct{})
+	for _, product := range products {
+		target, ok := wikiPageCommitTargetForProduct(product)
+		if ok {
+			pageSlugs[target.fullSlug] = struct{}{}
+		}
+	}
+	if len(pageSlugs) == 0 {
+		return result, nil
+	}
+
+	slugs := make([]string, 0, len(pageSlugs))
+	for slug := range pageSlugs {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	baseName := fmt.Sprintf("ragflow_%s", tenant)
+	const pageBatchSize = 2000
+	for offset := 0; ; offset += pageBatchSize {
+		res, err := eng.Search(ctx, &types.SearchRequest{
+			IndexNames: []string{baseName},
+			KbIDs:      []string{kb},
+			Offset:     offset,
+			Limit:      pageBatchSize,
+			SelectFields: []string{
+				"slug_kwd", "page_type_kwd", "md_with_weight", "content_with_weight",
+			},
+			Filter: map[string]interface{}{
+				"compile_kwd":   compileKwdWikiPage,
+				"available_int": 1,
+				"kb_id":         kb,
+				"slug_kwd":      slugs,
+			},
+			OrderBy: (&types.OrderByExpr{}).Asc("slug_kwd"),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if res == nil || len(res.Chunks) == 0 {
+			break
+		}
+		for _, row := range res.Chunks {
+			target, ok := wikiPageCommitTargetForRow(
+				pageEngineString(row["page_type_kwd"]),
+				pageEngineString(row["slug_kwd"]),
+			)
+			if !ok {
+				continue
+			}
+			content := pageEngineString(row["md_with_weight"])
+			if content == "" {
+				content = pageEngineString(row["content_with_weight"])
+			}
+			result[target.key] = content
+		}
+		if len(res.Chunks) < pageBatchSize {
+			break
+		}
+	}
+	return result, nil
+}
+
+// recordWikiPageCommits records generated page revisions after their merged
+// rows have been written. Sections and other Wiki products are intentionally
+// excluded because Python's generated-page history is page-level only.
+func (w engineWriter) recordWikiPageCommits(ctx context.Context, kb string, products []kccommon.Product, existing map[string]string) {
+	if w.commitService == nil {
+		return
+	}
+	seen := make(map[string]struct{})
+	for _, product := range products {
+		target, ok := wikiPageCommitTargetForProduct(product)
+		if !ok {
+			continue
+		}
+		if _, duplicate := seen[target.key]; duplicate {
+			continue
+		}
+		seen[target.key] = struct{}{}
+
+		_, err := w.commitService.RecordPageEdit(ctx, file.PageEditCommitInput{
+			DatasetID:  kb,
+			Slug:       target.bareSlug,
+			PageType:   target.pageType,
+			Title:      "Regenerated by artifact compilation",
+			Comments:   "Auto-update via incremental wiki compilation",
+			OldContent: existing[target.key],
+			NewContent: product.Content,
+		})
+		if err != nil {
+			common.Warn("knowledge_compile: failed to record generated Wiki page version",
+				zap.String("kb_id", kb),
+				zap.String("slug", target.fullSlug),
+				zap.Error(err))
+		}
+	}
+}
+
+func wikiPageCommitTargetForProduct(product kccommon.Product) (wikiPageCommitTarget, bool) {
+	if product.Variant != kccommon.VariantWiki || strings.ToLower(strings.TrimSpace(metaString(product.Meta, "kind"))) != "page" {
+		return wikiPageCommitTarget{}, false
+	}
+	return wikiPageCommitTargetForRow(
+		metaString(product.Meta, "page_type"),
+		metaString(product.Meta, "slug"),
+	)
+}
+
+func wikiPageCommitTargetForRow(pageType, slug string) (wikiPageCommitTarget, bool) {
+	pageType = strings.TrimSpace(pageType)
+	slug = strings.TrimSpace(slug)
+	if pageType == "" || slug == "" {
+		return wikiPageCommitTarget{}, false
+	}
+	bareSlug := strings.TrimPrefix(slug, pageType+"/")
+	if bareSlug == "" {
+		return wikiPageCommitTarget{}, false
+	}
+	return wikiPageCommitTarget{
+		key:      pageType + "\x00" + bareSlug,
+		fullSlug: pageType + "/" + bareSlug,
+		bareSlug: bareSlug,
+		pageType: pageType,
+	}, true
+}
+
+func pageEngineString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case []string:
+		if len(typed) > 0 {
+			return typed[0]
+		}
+	case []any:
+		if len(typed) > 0 {
+			if text, ok := typed[0].(string); ok {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 // WriteMergedStructure writes the dataset-level structure merged rows for a KB
@@ -1193,6 +1386,35 @@ func wikiGraphBareKey(slug string) string {
 	return strings.TrimSpace(s)
 }
 
+// tokenizeWikiGraphContent prepares the lexical fields used by wiki graph
+// keyword search. Keep the raw text as a fallback so graph rows remain
+// searchable when the tokenizer pool is unavailable during startup or tests.
+func tokenizeWikiGraphContent(title, slug, description string) (string, string, string, string) {
+	title = strings.TrimSpace(title)
+	content := strings.TrimSpace(strings.Join([]string{slug, description}, " "))
+	if title == "" && content == "" {
+		return "", "", "", ""
+	}
+
+	titleLTKS, err := tokenizer.Tokenize(title)
+	if err != nil || titleLTKS == "" {
+		titleLTKS = title
+	}
+	titleSMLTKS, err := tokenizer.FineGrainedTokenize(titleLTKS)
+	if err != nil || titleSMLTKS == "" {
+		titleSMLTKS = titleLTKS
+	}
+	contentLTKS, err := tokenizer.Tokenize(content)
+	if err != nil || contentLTKS == "" {
+		contentLTKS = content
+	}
+	contentSMLTKS, err := tokenizer.FineGrainedTokenize(contentLTKS)
+	if err != nil || contentSMLTKS == "" {
+		contentSMLTKS = contentLTKS
+	}
+	return titleLTKS, titleSMLTKS, contentLTKS, contentSMLTKS
+}
+
 // wikiPageProjection is the subset of a merged wiki_page row that the graph
 // projection needs. It is reconstructed from the stored display columns (the
 // same fields GetWikiGraph reads back), not from the JSON payload.
@@ -1607,6 +1829,7 @@ func (w engineWriter) projectWikiGraphRows(_ context.Context, tenant, kb string,
 		if err != nil {
 			return nil, err
 		}
+		titleLTKS, titleSMLTKS, contentLTKS, contentSMLTKS := tokenizeWikiGraphContent(p.Title, p.Slug, p.Summary)
 		rows = append(rows, map[string]interface{}{
 			"id":                      entityID,
 			"doc_id":                  kb,
@@ -1623,6 +1846,10 @@ func (w engineWriter) projectWikiGraphRows(_ context.Context, tenant, kb string,
 			"weight_int":              weight,
 			"source_chunk_ids":        p.SourceChunkIDs,
 			"source_doc_ids":          capSourceDocs(p.SourceDocIDs),
+			"title_tks":               titleLTKS,
+			"title_sm_tks":            titleSMLTKS,
+			"content_ltks":            contentLTKS,
+			"content_sm_ltks":         contentSMLTKS,
 			"content_with_weight":     string(content),
 		})
 

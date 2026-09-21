@@ -131,6 +131,9 @@ type proseChat struct{}
 
 func (proseChat) Chat(_ context.Context, req common.ChatRequest) (*common.ChatResponse, error) {
 	if req.JSONMode {
+		if strings.Contains(req.SystemPrompt, "into a mind map") {
+			return &common.ChatResponse{Content: `{"id":"mindmap root","source_chunk_ids":["c1"],"children":[]}`}, nil
+		}
 		return &common.ChatResponse{Content: `{"ok":true}`}, nil
 	}
 	// Echo a deterministic prose reply derived from the prompt.
@@ -1346,7 +1349,7 @@ func TestKnowledgeCompiler_TenantFromGlobals(t *testing.T) {
 	// all this test needs to assert.
 	_, _ = c.Invoke(ctx, nil, map[string]any{
 		"llm_id":          "llm1",
-		"chunks":          []any{map[string]any{"id": "c1", "content_with_weight": "alpha beta", "text": "alpha beta"}},
+		"chunks":          []any{map[string]any{"id": "c1", "text": "alpha beta"}},
 		"embedding_model": "emb1",
 	})
 	if gotTenant != "tenant-from-globals" {
