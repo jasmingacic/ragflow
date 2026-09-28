@@ -473,6 +473,7 @@ Example: A 1 KB message with 1024-dim embedding uses ~9 KB. The 5 MB default lim
       redoAll: 'Clear existing chunks',
       applyAutoMetadataSettings: 'Apply global auto-metadata settings',
       parseFileTip: 'Are you sure to parse?',
+      clearChunksReparseTip: 'Are you sure to clear chunks to re-parse?',
       parseFile: 'Parse file',
       emptyMetadata: 'No metadata',
       metadataField: 'Metadata field',
@@ -1651,6 +1652,33 @@ Example: Virtual Hosted Style`,
         'Email address that has access to the Drive content being synced',
       zendeskDescription:
         'Connect your Zendesk to sync tickets, articles, and other content.',
+      zoteroDescription:
+        'Connect your Zotero library to sync PDF attachments from papers and references.',
+      dataSourceFieldZoteroUserId: 'Zotero user ID',
+      dataSourceFieldZoteroApiKey: 'Zotero API key',
+      dataSourceFieldZoteroStorageMode: 'Attachment storage',
+      dataSourceOptionZoteroCloudStorage: 'Zotero cloud',
+      dataSourceOptionZoteroWebdav: 'WebDAV',
+      dataSourceFieldZoteroWebdavPassword: 'WebDAV password',
+      zoteroUserIdTip:
+        'Your numeric Zotero user ID from https://www.zotero.org/settings/keys.',
+      zoteroApiKeyTip:
+        'Create a personal API key with library access at https://www.zotero.org/settings/keys.',
+      zoteroStorageModeTip:
+        'Choose Zotero cloud to download files via the Web API, or WebDAV if your attachments are stored on your own WebDAV server.',
+      zoteroWebdavUrlTip:
+        'HTTPS URL of your WebDAV server. Zotero cloud storage does not provide a hosted WebDAV endpoint.',
+      zoteroWebdavUrlRequired:
+        'WebDAV server URL is required when attachment storage is WebDAV.',
+      dataSourceFieldZoteroWebdavUsername: 'WebDAV username',
+      zoteroWebdavUsernameTip:
+        'Username for WebDAV Basic authentication. This is often different from your Zotero user ID.',
+      zoteroWebdavUsernameRequired:
+        'WebDAV username is required when attachment storage is WebDAV.',
+      zoteroWebdavPasswordTip:
+        'WebDAV password from Zotero storage settings (not your Zotero account password).',
+      zoteroWebdavPasswordRequired:
+        'WebDAV password is required when attachment storage is WebDAV.',
       google_driveMyDriveEmailsTip:
         'Comma-separated emails whose "My Drive" contents should be indexed (include the primary admin).',
       google_driveSharedFoldersTip:
@@ -2397,7 +2425,7 @@ Example: Virtual Hosted Style`,
       editCustomModelTitle: 'Edit model',
       modelMaxTokens: 'Max context length',
       modelFeatures: 'Model features',
-      modelFeatureToolCall: 'Tool call',
+      modelFeatureToolCall: 'Tool calling',
       modelFeatureFunctionCall: 'Function call',
       modelNameRequired: 'Model name is required',
       modelNameDuplicate: 'Model name already exists',
@@ -2535,7 +2563,8 @@ Example: Virtual Hosted Style`,
       navDeleteNodeTitle: 'Delete node',
       navDeleteNodeDescription:
         'Are you sure you want to delete this node and its children?',
-      representationEmpty: 'No artifact templates available.',
+      representationEmpty:
+        'The pipeline compiler is not configured, or no artifact was extracted.',
       representationUnsupported:
         'This representation type is not supported yet.',
       claimsPanelTitle: 'Claims · {{name}}',
@@ -2930,6 +2959,13 @@ Best for: Documents with flowing, contextually connected content — such as boo
       addPageNumbers: 'Add Page Numbers',
       addTimestamp: 'Add Timestamp',
       watermarkText: 'Watermark Text',
+      headerText: 'Header Text',
+      footerText: 'Footer Text',
+      includeDownloadInfoInContent: 'Append download info to content',
+      contentPlaceholder: 'Enter markdown content...',
+      filenamePlaceholder: 'document.ext (auto-generated if empty)',
+      contentRequired: 'Content is required',
+      fontSizeMin: 'Font size must be at least 12',
       channel: 'Channel',
       channelTip: `Perform text search or news search on the component's input`,
       text: 'Text',
@@ -3500,6 +3536,7 @@ This process aggregates variables from multiple branches into a single variable 
       tokenizerRequired: 'Please add the Indexer node first',
       nodeFormInvalid: 'Invalid settings, please fix them first',
       agentModelMissing: 'No model selected, please choose one first',
+      extractorModelMissing: 'No model selected, please choose one first',
       retrievalDatasetMissing: 'No dataset selected, please choose one first',
       retrievalMemoryMissing: 'No memories selected, please choose them first',
       checklist: 'Checklist',
@@ -3520,12 +3557,16 @@ This process aggregates variables from multiple branches into a single variable 
       retrievalMemoryRequired: 'Please select memories first',
       tokenizerDescription:
         'Transforms text into the required data structure (e.g., vector embeddings for Embedding Search) depending on the chosen search method.',
+      generalChunkerDescription:
+        'A general-purpose chunking method for most document types, with flexible control over chunk size, overlap, and context.',
       tokenChunker: 'Token Chunker',
       tokenChunkerDescription:
         'Split text into chunks by token length with optional delimiters and overlap.',
       titleChunkerDescription:
         'Split documents into sections by title hierarchy. Define heading levels with regex rules, then choose Hierarchy or Group mode to control how chunks are structured.',
       titleChunker: 'Title Chunker',
+      manualChunkerDescription:
+        'A chunking method for manual-style documents such as product manuals and user guides, with structure-aware splitting that preserves relevant context.',
       oneChunkerDescription:
         'No additional configuration is required for this chunker.',
       qAChunkerDescription:
@@ -3569,7 +3610,7 @@ This process aggregates variables from multiple branches into a single variable 
       searchMethodTip: `Defines how the content can be searched — by full-text, embedding, or both.
 The Indexer will store the content in the corresponding data structures for the selected methods.`,
       // file: 'File',
-      parserMethod: 'PDF parser',
+      parserMethod: 'Parser',
       tableResultType: 'Table result type',
       markdownImageResponseType: 'Markdown image response type',
       // systemPrompt: 'System Prompt',
