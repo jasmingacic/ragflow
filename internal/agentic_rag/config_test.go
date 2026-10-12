@@ -189,7 +189,7 @@ func TestShippedConfigIsASingleDirectAnswerTemplate(t *testing.T) {
 	}
 	wantTools := []string{
 		"think", "todo_write", "grep_chunks", "search_bm25_chunks",
-		"search_semantic_chunks", "list_chunks", "run_javascript",
+		"search_semantic_chunks", "list_chunks", "run_javascript", "search_metadata",
 	}
 	if strings.Join(tmpl.Tools, ",") != strings.Join(wantTools, ",") {
 		t.Fatalf("tools = %v, want %v", tmpl.Tools, wantTools)
@@ -201,7 +201,10 @@ func TestShippedConfigIsASingleDirectAnswerTemplate(t *testing.T) {
 	content := tmpl.Content
 	for _, want := range []string{
 		"grep_chunks", "search_bm25_chunks", "search_semantic_chunks",
-		"list_chunks", "chunk_id:", "Evidence-First",
+		"list_chunks", "[ID:", "Evidence-First",
+		"If web_search is available", "at least one web keyword query",
+		"list_chunks cannot read web chunks", "corpus- or web-backed fact",
+		"Always search configured datasets", "web results supplement dataset evidence",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("prompt must mention %q", want)
@@ -211,6 +214,7 @@ func TestShippedConfigIsASingleDirectAnswerTemplate(t *testing.T) {
 		"Candidate Matrix", "Reasoning Chain", "Sub-question",
 		"question decomposition", "auditor", "audit_max_pass",
 		"Final Answer", "Guessed Answer",
+		"authoritative source for every factual claim", "for facts the corpus cannot have",
 	} {
 		if strings.Contains(content, banned) {
 			t.Errorf("prompt must not contain %q (the direct-answer rewrite removed the intermediate deliverable)", banned)
