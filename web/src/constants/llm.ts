@@ -111,6 +111,8 @@ export enum LLMFactory {
   ApiRoute = 'API-Route',
   CheaperInference = 'Cheaper Inference',
   Opper = 'Opper',
+  DemonRoute = 'Demon Route',
+  TrustedRouter = 'TrustedRouter',
 }
 
 // Please lowercase the file name
@@ -205,6 +207,7 @@ export const IconMap = {
   [LLMFactory.MWS]: 'mws',
   [LLMFactory.CheaperInference]: 'cheaperinference',
   [LLMFactory.Opper]: 'opper',
+  [LLMFactory.TrustedRouter]: 'trustedrouter',
 };
 
 export const ModelTypeToField: Record<string, string> = {
@@ -234,6 +237,7 @@ export const APIMapUrl = {
   [LLMFactory.DaoXE]: 'https://daoxe.com',
   [LLMFactory.CheaperInference]: 'https://cheaperinference.com',
   [LLMFactory.Opper]: 'https://platform.opper.ai',
+  [LLMFactory.TrustedRouter]: 'https://trustedrouter.com/keys',
   [LLMFactory.MWS]:
     'https://mws.ru/docs/cloud-platform/gpt/general/inference-text.html',
   [LLMFactory.Anthropic]: 'https://console.anthropic.com/settings/keys',

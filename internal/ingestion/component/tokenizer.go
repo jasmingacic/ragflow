@@ -105,9 +105,9 @@ const ComponentNameTokenizer = "Tokenizer"
 // `re.sub(r"\.[a-zA-Z]+$", "", name)` in tokenizer.py:137.
 var titleExtRE = regexp.MustCompile(`\.[a-zA-Z]+$`)
 
-// Table content is no longer carried as HTML markup (the parser emits the
-// structured entity.TableData contract), so there is no table markup to strip
-// from the embedded text. The legacy htmlTableRE was removed.
+// Table chunks carry their row rendered as an HTML <table> on Text (produced
+// by the chunker), so the embedding input intentionally includes the table
+// markup — there is no markup to strip. The legacy htmlTableRE stays removed.
 
 // EmbeddingResult carries a vector plus the model-reported token usage
 // for that input batch entry.
@@ -381,7 +381,7 @@ func (c *TokenizerComponent) Invoke(ctx context.Context, db *gorm.DB, inputs map
 
 	language := globals.GlobalOrInput(ctx, inputs, "lang", "English")
 
-	if contains(c.param.SearchMethod, "full_text") {
+	if slices.Contains(c.param.SearchMethod, "full_text") {
 		if err := tokenizeChunks(chunks, titleStem, language); err != nil {
 			return nil, err
 		}
@@ -904,7 +904,8 @@ func declaredTitleTokens(chunks []schema.ChunkDoc) []string {
 // Mirrors python tokenizer.py:130-185 and rag/nlp/__init__.py tokenize() /
 // tokenize_chunks().
 //
-// language sets the Snowball stemmer language, matching Python's
+// language selects the analyzer language (Snowball stemmer, or diacritics
+// folding without stemming for Slovak/Czech), matching Python's
 // rag_tokenizer.tokenizer.set_language(language) call inside tokenize().
 func tokenizeChunks(chunks []schema.ChunkDoc, titleStem string, language string) error {
 	tok := tokenizer.New(language)
@@ -1041,11 +1042,11 @@ func concatFields(ck schema.ChunkDoc, fields []string) string {
 // This is a deliberate, go_intentional divergence. Do NOT "align" this to a
 // path that injects a default embedding.
 func shouldHaveEmbedding(searchMethods []string, kbID string) bool {
-	return contains(searchMethods, "embedding") && kbID != ""
+	return slices.Contains(searchMethods, "embedding") && kbID != ""
 }
 
 func validateTokenizerOutputs(chunks []schema.ChunkDoc, searchMethods, fields []string, kbID string) error {
-	needFullText := contains(searchMethods, "full_text")
+	needFullText := slices.Contains(searchMethods, "full_text")
 	needEmbedding := shouldHaveEmbedding(searchMethods, kbID)
 	if !needFullText && !needEmbedding {
 		return nil
@@ -1127,10 +1128,6 @@ func cloneInputs(m map[string]any) map[string]any {
 		cp[k] = v
 	}
 	return cp
-}
-
-func contains(s []string, v string) bool {
-	return slices.Contains(s, v)
 }
 
 func intPtr(v int) *int { return &v }
