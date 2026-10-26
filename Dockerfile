@@ -55,16 +55,16 @@ RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/huggingface.co
 # Copy the cl100k_base BPE table used by the Go tokenizer (tiktoken-go
 # cl100k_base). The deps image ships it at its root; the Go image previously
 # mounted only /huggingface.co and omitted this file, so NumTokensFromString
-# silently returned 0. localBpeLoader resolves it from <workdir>/ragflow_deps/,
+# silently returned 0. localBpeLoader resolves it from <workdir>/deps/,
 # so dropping it here makes the table load offline at startup (see
 # InitCL100KEncoder fail-fast guard).
 RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/cl100k_base.tiktoken,target=/tmp/cl100k_base.tiktoken \
-    mkdir -p /ragflow/ragflow_deps && \
-    cp /tmp/cl100k_base.tiktoken /ragflow/ragflow_deps/cl100k_base.tiktoken
+    mkdir -p /ragflow/deps && \
+    cp /tmp/cl100k_base.tiktoken /ragflow/deps/cl100k_base.tiktoken
 
 # Embedding tokenizer assets for the Go counters (internal/tokenizer). Same story as
 # the cl100k table above: the deps image carries them and the Go image has to put them
-# where the loaders search (<workdir>/ragflow_deps/huggingface.co/<repo>/<file>). A
+# where the loaders search (<workdir>/deps/huggingface.co/<repo>/<file>). A
 # missing asset FAILS THE BUILD here rather than shipping an image where every tagged
 # model silently counts with the calibrated cl100k estimate. The tokenizer.json files
 # that exist only as cross-check oracles are deliberately not shipped.
@@ -75,8 +75,8 @@ RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/huggingface.co
         Qwen/Qwen3-Embedding-0.6B/tokenizer.json \
         intfloat/e5-mistral-7b-instruct/tokenizer.json ; do \
         if [ -f "/huggingface.co/$asset" ]; then \
-            mkdir -p "/ragflow/ragflow_deps/huggingface.co/$(dirname "$asset")" && \
-            cp "/huggingface.co/$asset" "/ragflow/ragflow_deps/huggingface.co/$asset" ; \
+            mkdir -p "/ragflow/deps/huggingface.co/$(dirname "$asset")" && \
+            cp "/huggingface.co/$asset" "/ragflow/deps/huggingface.co/$asset" ; \
         else \
             echo "ERROR: tokenizer asset $asset is missing from the infiniflow/ragflow_deps image; this image would count with the calibrated estimate instead of the model's own tokenizer" >&2 ; \
             exit 1 ; \
@@ -84,6 +84,14 @@ RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/huggingface.co
     done
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# The Noto Sans CJK SC font is now pre-baked into infiniflow/ragflow_deps:latest
+# (downloaded + verified by deps/download_deps.py) instead of being curl'd from
+# GitHub at main-image build time. gopdf reads it at runtime from
+# /usr/local/share/fonts/truetype/noto/NotoSansCJKsc-VF.ttf (pdf_writer.go).
+RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/NotoSansCJKsc-VF.ttf,target=/tmp/NotoSansCJKsc-VF.ttf \
+    mkdir -p /usr/local/share/fonts/truetype/noto && \
+    cp /tmp/NotoSansCJKsc-VF.ttf /usr/local/share/fonts/truetype/noto/NotoSansCJKsc-VF.ttf
 
 # Setup apt
 RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
@@ -99,11 +107,30 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     chmod 1777 /tmp && \
     apt update && \
     apt --no-install-recommends install -y ca-certificates curl vim unzip iproute2 fonts-dejavu fontconfig && \
-    mkdir -p /usr/local/share/fonts/truetype/noto && \
-    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL \
-        -o /usr/local/share/fonts/truetype/noto/NotoSansCJKsc-VF.ttf \
-        https://github.com/notofonts/noto-cjk/raw/main/Sans/Variable/TTF/NotoSansCJKsc-VF.ttf && \
     fc-cache -f && \
+    rm -rf /var/lib/apt/lists/* && apt-get clean
+
+# Stagehand launches Chrome over CDP; its server binary does not bundle a browser.
+ARG CHROME_VERSION=156.0.8078.47
+ENV CHROME_PATH=/opt/chrome/chrome
+RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libnss3 libatk-bridge2.0-0 libx11-xcb1 libxcomposite1 libxdamage1 libxfixes3 \
+        libxrandr2 libgbm1 libasound2t64 libxkbcommon0 libpango-1.0-0 libcairo2 libcups2t64 && \
+    case "$(dpkg --print-architecture)" in \
+        amd64) chrome_platform=linux64 ;; \
+        arm64) chrome_platform=linux-arm64 ;; \
+        *) echo "Unsupported Chrome architecture" >&2; exit 1 ;; \
+    esac && \
+    curl --retry 5 --retry-all-errors -fsSL \
+        "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/${chrome_platform}/chrome-${chrome_platform}.zip" \
+        -o /tmp/chrome.zip && \
+    unzip -q /tmp/chrome.zip -d /opt && \
+    mv "/opt/chrome-${chrome_platform}" /opt/chrome && \
+    "$CHROME_PATH" --version && \
+    "$CHROME_PATH" --headless --no-sandbox --disable-dev-shm-usage --dump-dom about:blank | grep -q '<html>' && \
+    rm /tmp/chrome.zip && \
     rm -rf /var/lib/apt/lists/* && apt-get clean
 
 # Download resource from GitHub to /usr/share/infinity
