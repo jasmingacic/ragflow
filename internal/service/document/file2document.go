@@ -29,7 +29,7 @@ import (
 	"ragflow/internal/entity"
 	"ragflow/internal/permission"
 	permissionresponse "ragflow/internal/permission/response"
-	"ragflow/internal/service"
+
 	"ragflow/internal/utility"
 )
 
@@ -155,7 +155,7 @@ func (s *File2DocumentService) LinkToDatasets(ctx context.Context, userID string
 
 	// ── 5. Validate KB permissions ────────────────────────────────────────────
 	for _, kb := range kbMap {
-		if err := service.CheckDatasetAccess(ctx, permission.Subject{UserID: userID}, kb.ID, permission.OperationUpdate); err != nil {
+		if err := permission.NewDatabaseChecker(dao.DB).CheckResource(ctx, permission.Subject{UserID: userID}, permission.ResourceRef{Kind: permission.ResourceKindDataset, ID: kb.ID}, permission.OperationUpdate); err != nil {
 			_, permissionErr := permissionresponse.Normalize(err)
 			return permissionErr
 		}
@@ -245,16 +245,17 @@ func (s *File2DocumentService) convertFiles(ctx context.Context, fileIDs, kbIDs 
 			parserID, pipelineID := parserSelectionColumns(selection)
 			suffix := strings.TrimPrefix(filepath.Ext(docName), ".")
 			doc := &entity.Document{
-				ID:           common.GenerateUUID(),
-				KbID:         kb.ID,
-				ParserID:     parserID,
-				PipelineID:   pipelineID,
-				ParserConfig: parserConfig,
-				CreatedBy:    userID,
-				Type:         file.Type,
-				Name:         &docName,
-				Suffix:       suffix,
-				Size:         file.Size,
+				ID:                common.GenerateUUID(),
+				KbID:              kb.ID,
+				ParserID:          parserID,
+				PipelineID:        pipelineID,
+				PipelineVersionID: kb.PipelineVersionID,
+				ParserConfig:      parserConfig,
+				CreatedBy:         userID,
+				Type:              file.Type,
+				Name:              &docName,
+				Suffix:            suffix,
+				Size:              file.Size,
 			}
 			if file.Location != nil {
 				doc.Location = file.Location

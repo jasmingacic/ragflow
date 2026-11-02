@@ -17,6 +17,7 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	"ragflow/internal/storage"
 	"ragflow/internal/utility"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -151,24 +153,13 @@ func (h *Handler) AuthCheck(c *gin.Context) {
 	common.SuccessNoData(c, "Admin is authorized")
 }
 
-// ListUsersRequest list users request
-type ListUsersRequest struct {
-	Enterprise *bool   `json:"enterprise"`
-	UserStatus *string `json:"user_status"`
-	OrderBy    *string `json:"order_by"`
-	Top        *int    `json:"top"`
-	Days       *int    `json:"days"`
-	Quota      *int    `json:"quota"`
-	Plan       *string `json:"plan"`
-}
-
 // ListUsers handle list users
 func (h *Handler) ListUsers(c *gin.Context) {
 
 	name := c.DefaultQuery("keyword", "")
 	status := c.DefaultQuery("status", "")
 	role := c.DefaultQuery("role", "")
-	sort := c.DefaultQuery("sort", "")     // descending or ascending
+	sort := c.DefaultQuery("sort", "")     // asc or desc
 	orderBy := c.DefaultQuery("order", "") // order by field
 	pageInt, err := common.ParseRequestIntPositive(c, c.Query("page"), "page", 1)
 	if err != nil {
@@ -184,6 +175,9 @@ func (h *Handler) ListUsers(c *gin.Context) {
 	topInt, err := common.ParseRequestIntPositive(c, c.Query("top"), "top", 0)
 	if err != nil {
 		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
+		return
+	}
+	if !validateAdminUserListPagination(c, pageInt, pageSizeInt, topInt) {
 		return
 	}
 	// quota is optional: nil when the query param is absent, &v when present
@@ -210,28 +204,50 @@ func (h *Handler) ListUsers(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	var users []map[string]interface{}
+	var total int64
 	switch common.GetRAGFlowType() {
 	case common.OpenSourceVersion:
-		users, err = h.service.ListUsers(ctx, pageInt, pageSizeInt, name, status, sort, orderBy)
-		if err != nil {
-			common.ErrorWithCode(c, common.CodeServerError, err.Error())
-			return
-		}
-
-		common.SuccessWithData(c, users, "List users")
-		return
+		users, total, err = h.service.ListUsers(ctx, pageInt, pageSizeInt, name, status, sort, orderBy)
 	case common.EnterpriseEdition:
-		users, err = h.service.ListUsersEE(ctx, pageInt, pageSizeInt, name, status, role, sort, orderBy, plan, topInt, daysInt, quotaPtr)
-		if err != nil {
-			common.ErrorWithCode(c, common.CodeServerError, err.Error())
-			return
-		}
-		common.SuccessWithData(c, users, "List users")
-		return
+		users, total, err = h.service.ListUsersEE(ctx, pageInt, pageSizeInt, name, status, role, sort, orderBy, plan, topInt, daysInt, quotaPtr)
 	default:
 		common.ErrorWithCode(c, common.CodeBadRequest, "Invalid RAGFlow type")
 		return
 	}
+	if errors.Is(err, errInvalidUserListQuery) {
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
+		return
+	}
+	if err != nil {
+		common.ErrorWithCode(c, common.CodeServerError, err.Error())
+		return
+	}
+	common.SuccessWithDataAndTotal(c, users, total, "List users")
+}
+
+func validateAdminUserListPagination(c *gin.Context, page, pageSize, top int) bool {
+	if page < 1 || pageSize < 1 {
+		common.ErrorWithCode(c, common.CodeBadRequest, "page and page_size must be positive integers")
+		return false
+	}
+	query := c.Request.URL.Query()
+	if query.Has("top") {
+		if top < 1 {
+			common.ErrorWithCode(c, common.CodeBadRequest, "top must be a positive integer")
+			return false
+		}
+		if query.Has("page") || query.Has("page_size") {
+			common.ErrorWithCode(c, common.CodeBadRequest, "top cannot be combined with page or page_size")
+			return false
+		}
+		switch strings.ToLower(strings.TrimSpace(c.Query("order"))) {
+		case "storage", "documents", "index":
+		default:
+			common.ErrorWithCode(c, common.CodeBadRequest, "top is only supported for storage, documents and index")
+			return false
+		}
+	}
+	return true
 }
 
 // CreateUserHTTPRequest create user request
@@ -643,16 +659,55 @@ func (h *Handler) ShowVariable(c *gin.Context) {
 
 // SetVariableHTTPRequest set variable request
 type SetVariableHTTPRequest struct {
-	VarName  string `json:"var_name" binding:"required"`
-	VarValue string `json:"var_value" binding:"required"`
+	VarName  string          `json:"var_name"`
+	VarValue json.RawMessage `json:"var_value"`
+}
+
+// Missing values are reported separately from unparsable ones so the client can
+// tell "you forgot the field" apart from "the field is malformed".
+var (
+	errMissingVariableValue = errors.New("Var value is required")
+	errInvalidVariableValue = errors.New("Var value is invalid")
+)
+
+// flattenedVariableValue renders a JSON value into the textual form stored in
+// system_settings.value. Every data type shares that one textual column, so
+// scalars arriving as their native JSON types are rendered back to their
+// literal instead of being rejected for not being a JSON string. Objects and
+// arrays keep their JSON encoding verbatim, which is the stored form of
+// json-typed settings.
+func (r SetVariableHTTPRequest) flattenedVariableValue() (string, error) {
+	raw := bytes.TrimSpace(r.VarValue)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return "", errMissingVariableValue
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text, nil
+	}
+
+	var boolean bool
+	if err := json.Unmarshal(raw, &boolean); err == nil {
+		return strconv.FormatBool(boolean), nil
+	}
+
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return number.String(), nil
+	}
+
+	if json.Valid(raw) {
+		return string(raw), nil
+	}
+	return "", errInvalidVariableValue
 }
 
 // SetVariable handle set variable
-// Python logic: update or create a system setting with the given name and value
 func (h *Handler) SetVariable(c *gin.Context) {
 	var req SetVariableHTTPRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		common.ErrorWithCode(c, common.CodeBadRequest, "Var name is required")
+		common.ErrorWithCode(c, common.CodeBadRequest, "Invalid request body: "+err.Error())
 		return
 	}
 
@@ -661,13 +716,14 @@ func (h *Handler) SetVariable(c *gin.Context) {
 		return
 	}
 
-	if req.VarValue == "" {
-		common.ErrorWithCode(c, common.CodeBadRequest, "Var value is required")
+	varValue, err := req.flattenedVariableValue()
+	if err != nil {
+		common.ErrorWithCode(c, common.CodeBadRequest, err.Error())
 		return
 	}
 
 	ctx := c.Request.Context()
-	if err := h.service.SetVariable(ctx, req.VarName, req.VarValue); err != nil {
+	if err := h.service.SetVariable(ctx, req.VarName, varValue); err != nil {
 		common.ErrorWithCode(c, common.CodeServerError, err.Error())
 		return
 	}

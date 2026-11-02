@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ragflow/internal/common"
 	"ragflow/internal/dao"
@@ -19,6 +20,35 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
+
+// resolvePipelineVersionID determines which canvas version to bind for a
+// dataset/document in Pipeline mode (design section 5 sticky snapshot). When a
+// specific version is requested it must belong to the bound pipeline (ownership
+// check, design T13); otherwise the latest version of the bound canvas is used.
+// BuiltIn mode (no pipelineID) yields nil.
+func resolvePipelineVersionID(ctx context.Context, db *gorm.DB, pipelineID *string, requestedVersionID *string) (*string, error) {
+	if pipelineID == nil || strings.TrimSpace(*pipelineID) == "" {
+		return nil, nil
+	}
+	canvasID := strings.TrimSpace(*pipelineID)
+	if requestedVersionID != nil && strings.TrimSpace(*requestedVersionID) != "" {
+		v, err := dao.NewUserCanvasVersionDAO().GetByID(ctx, db, strings.TrimSpace(*requestedVersionID))
+		if err != nil {
+			if errors.Is(err, dao.ErrUserCanvasVersionNotFound) {
+				return nil, fmt.Errorf("pipeline version %s not found: %w", *requestedVersionID, service.ErrPipelineVersionMissing)
+			}
+			return nil, fmt.Errorf("load pipeline version %s: %w", *requestedVersionID, err)
+		}
+		if v.UserCanvasID != canvasID {
+			return nil, fmt.Errorf("pipeline version %s does not belong to canvas %s: %w", *requestedVersionID, canvasID, service.ErrPipelineVersionMissing)
+		}
+		return requestedVersionID, nil
+	}
+	if v, err := dao.NewUserCanvasVersionDAO().GetLatest(ctx, db, canvasID); err == nil && v != nil {
+		return &v.ID, nil
+	}
+	return nil, nil
+}
 
 func (d *DatasetService) CreateDataset(ctx context.Context, req *service.CreateDatasetRequest, subject permission.Subject) (map[string]interface{}, common.ErrorCode, error) {
 	tenantID := strings.TrimSpace(subject.TenantID)
@@ -34,8 +64,8 @@ func (d *DatasetService) CreateDataset(ctx context.Context, req *service.CreateD
 	if name == "" {
 		return nil, common.CodeDataError, errors.New("dataset name can't be empty")
 	}
-	if len(name) > entity.DatasetNameLimit {
-		return nil, common.CodeDataError, fmt.Errorf("Dataset name length is %d which is large than %d", len(name), entity.DatasetNameLimit)
+	if utf8.RuneCountInString(name) > entity.DatasetNameLimit {
+		return nil, common.CodeDataError, fmt.Errorf("Dataset name length is %d which is large than %d", utf8.RuneCountInString(name), entity.DatasetNameLimit)
 	}
 
 	tenant, err := d.tenantDAO.GetByID(ctx, dao.DB, tenantID)
@@ -138,7 +168,18 @@ func (d *DatasetService) CreateDataset(ctx context.Context, req *service.CreateD
 		}
 	}
 	isPipeline := pipelineID != nil && strings.TrimSpace(*pipelineID) != ""
-	dslJSON, dslErr := service.LoadPipelineDSL(ctx, isPipeline, parserID, pipelineID)
+	// design C5/G3: an empty version in Pipeline mode is no longer auto-backfilled
+	// to the canvas latest; the Save is rejected so the UI can show the red Missing
+	// badge and surface the "版本信息缺失" error. BuiltIn mode (no canvas bound) is
+	// exempt.
+	if isPipeline && (req.PipelineVersionID == nil || strings.TrimSpace(*req.PipelineVersionID) == "") {
+		return nil, common.CodeBadRequest, service.ErrPipelineVersionEmpty
+	}
+	pipelineVersionID, verr := resolvePipelineVersionID(ctx, dao.DB, pipelineID, req.PipelineVersionID)
+	if verr != nil {
+		return nil, common.CodeBadRequest, verr
+	}
+	dslJSON, dslErr := service.LoadPipelineDSL(ctx, isPipeline, parserID, pipelineID, pipelineVersionID)
 	parserConfig := entity.JSONMap{}
 	if dslErr != nil {
 		common.Warn("failed to load pipeline DSL for building parser_config",
@@ -188,12 +229,20 @@ func (d *DatasetService) CreateDataset(ctx context.Context, req *service.CreateD
 
 	var parserConfigMap map[string]interface{} = parserConfig
 
-	embdID, tenantEmbdID, err := service.NewTenantService().GetDefaultModelRefsForUser(ctx, userID, tenantID, entity.ModelTypeEmbedding)
-	if err != nil {
-		return nil, common.CodeServerError, err
+	modelFactory := service.NewModelFactory()
+	identity := service.Identity{UserID: userID, TenantID: tenantID}
+	embdID, tenantEmbdID := "", ""
+	if embeddingModel == "" {
+		embeddingInfo, embeddingErr := modelFactory.ResolveDefaultInfo(ctx, identity, entity.ModelTypeEmbedding)
+		if embeddingErr == nil {
+			embdID = service.ModelReference(embeddingInfo)
+			tenantEmbdID = embeddingInfo.ID
+		} else if !errors.Is(embeddingErr, service.ErrNoDefaultModel) {
+			return nil, common.CodeServerError, embeddingErr
+		}
 	}
 	if embeddingModel != "" {
-		ok, message := d.verifyEmbeddingAvailability(ctx, embeddingModel, service.ModelAccess{UserID: userID, TenantID: tenantID})
+		ok, message := d.verifyEmbeddingAvailability(ctx, embeddingModel, identity)
 		if !ok {
 			return nil, common.CodeDataError, errors.New(message)
 		}
@@ -201,7 +250,7 @@ func (d *DatasetService) CreateDataset(ctx context.Context, req *service.CreateD
 		tenantEmbdID = ""
 	}
 	if embdID != "" && tenantEmbdID == "" {
-		target, err := service.NewModelFactory().ResolveInfo(ctx, service.ModelAccess{UserID: userID, TenantID: tenantID}, entity.ModelTypeEmbedding, embdID)
+		target, err := modelFactory.ResolveInfo(ctx, identity, entity.ModelTypeEmbedding, embdID)
 		if err == nil {
 			tenantEmbdID = target.ID
 		} else {
@@ -218,25 +267,29 @@ func (d *DatasetService) CreateDataset(ctx context.Context, req *service.CreateD
 	}
 	name = dedupedName
 
-	llmID, _, err := service.NewTenantService().GetDefaultModelRefsForUser(ctx, userID, tenantID, entity.ModelTypeChat)
-	if err != nil {
-		return nil, common.CodeServerError, err
+	llmID := ""
+	chatInfo, chatErr := modelFactory.ResolveDefaultInfo(ctx, identity, entity.ModelTypeChat)
+	if chatErr == nil {
+		llmID = service.ModelReference(chatInfo)
+	} else if !errors.Is(chatErr, service.ErrNoDefaultModel) {
+		return nil, common.CodeServerError, chatErr
 	}
 	parserConfig = service.ApplyComponentScopedParserConfig(parserConfig, llmID)
 
 	kb := &entity.Knowledgebase{
-		ID:           kbID,
-		Name:         name,
-		TenantID:     tenantID,
-		CreatedBy:    userID,
-		ParserID:     parserID,
-		PipelineID:   pipelineID,
-		ParserConfig: entity.JSONMap(parserConfigMap),
-		Permission:   visibility,
-		Language:     language,
-		EmbdID:       embdID,
-		TenantEmbdID: stringPtrIfNotEmpty(tenantEmbdID),
-		Status:       &status,
+		ID:                kbID,
+		PipelineVersionID: pipelineVersionID,
+		Name:              name,
+		TenantID:          tenantID,
+		CreatedBy:         userID,
+		ParserID:          parserID,
+		PipelineID:        pipelineID,
+		ParserConfig:      entity.JSONMap(parserConfigMap),
+		Permission:        visibility,
+		Language:          language,
+		EmbdID:            embdID,
+		TenantEmbdID:      stringPtrIfNotEmpty(tenantEmbdID),
+		Status:            &status,
 	}
 
 	if err = dao.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -260,13 +313,13 @@ func (d *DatasetService) CreateDataset(ctx context.Context, req *service.CreateD
 		return nil, common.CodeServerError, errors.New("dataset created failed")
 	}
 
-	return datasetToMap(createdKB), common.CodeSuccess, nil
+	return datasetToMap(ctx, createdKB), common.CodeSuccess, nil
 }
 
 // dedupeDatasetName returns a non-colliding dataset name within the tenant,
 // appending (1), (2), ... when the requested name is already taken.
 func (d *DatasetService) dedupeDatasetName(ctx context.Context, name, tenantID string) (string, error) {
-	return common.UniqueName(name, entity.DatasetNameLimit, func(candidate string) (bool, error) {
+	return common.UniqueNameCharacters(name, entity.DatasetNameLimit, func(candidate string) (bool, error) {
 		return d.kbDAO.NameExists(ctx, dao.DB, tenantID, candidate)
 	})
 }
@@ -286,7 +339,7 @@ func (d *DatasetService) GetDataset(ctx context.Context, datasetID, userID strin
 	}
 	datasetID = normalizedID
 
-	if err := d.CheckAccess(ctx, permission.Subject{UserID: userID}, datasetID, permission.OperationRead); err != nil {
+	if err := permission.NewDatabaseChecker(dao.DB).CheckResource(ctx, permission.Subject{UserID: userID}, permission.ResourceRef{Kind: permission.ResourceKindDataset, ID: datasetID}, permission.OperationRead); err != nil {
 		code, permissionErr := permissionresponse.NormalizeHidden(err)
 		return nil, code, permissionErr
 	}
@@ -297,8 +350,8 @@ func (d *DatasetService) GetDataset(ctx context.Context, datasetID, userID strin
 		return nil, code, permissionErr
 	}
 
-	data := datasetToMap(kb)
-	operatorPermission, err := service.ResolveOperatorPermission(ctx, userID, permission.ResourceRef{
+	data := datasetToMap(ctx, kb)
+	access, err := permission.NewDatabaseChecker(dao.DB).ResolveAccess(ctx, permission.Subject{UserID: userID}, permission.ResourceRef{
 		Kind: permission.ResourceKindDataset,
 		ID:   kb.ID,
 	})
@@ -306,7 +359,7 @@ func (d *DatasetService) GetDataset(ctx context.Context, datasetID, userID strin
 		code, permissionErr := permissionresponse.NormalizeHidden(err)
 		return nil, code, permissionErr
 	}
-	data["operator_permission"] = operatorPermission
+	data["operator_permission"] = access.PermissionMask
 
 	size, err := d.documentDAO.SumSizeByDatasetID(ctx, dao.DB, datasetID)
 	if err != nil {
@@ -670,11 +723,14 @@ func (d *DatasetService) ListDatasets(ctx context.Context, id, name string, page
 
 	data := make([]map[string]interface{}, 0, len(kbs))
 	modelNameCache := make(map[string]string)
+	// Resolve the latest version id per canvas once for the whole page so the
+	// per-row outdated flag does not issue a GetLatest per dataset (N+1).
+	latestVersionByCanvas := latestVersionIDsByCanvas(ctx, kbs)
 	for _, kb := range kbs {
 		if kb == nil {
 			continue
 		}
-		item := datasetListItemToMap(kb)
+		item := datasetListItemToMap(latestVersionByCanvas, kb)
 		item["operator_permission"] = operatorPermissions[kb.ID]
 		// Mirror the memory list: surface the concrete model display name
 		// (modelName@instance@provider) instead of a raw tenant_model ID.

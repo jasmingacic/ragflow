@@ -1592,12 +1592,12 @@ func setupMinerUVisionDispatchDB(t *testing.T, baseURL string) (*gorm.DB, string
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&entity.TenantModelProvider{}, &entity.TenantModelInstance{}, &entity.TenantModel{}); err != nil {
+	if err := db.AutoMigrate(&entity.UserTenant{}, &entity.TenantModelProvider{}, &entity.TenantModelInstance{}, &entity.TenantModel{}); err != nil {
 		t.Fatalf("migrate model tables: %v", err)
 	}
 	modelID := "061436bbd8474d54be5bba3efbeac109"
 	rows := []any{
-		&entity.TenantModelProvider{ID: "provider-mineru-1", TenantID: "test-tenant", ProviderName: "MinerU"},
+		&entity.TenantModelProvider{ID: "provider-mineru-1", UserID: "test-tenant", TenantID: "test-tenant", ProviderName: "MinerU"},
 		&entity.TenantModelInstance{ID: "instance-mineru-1", ProviderID: "provider-mineru-1", InstanceName: "default", APIKey: "mineru-secret", Status: "active", Extra: `{"base_url":"` + baseURL + `"}`},
 		&entity.TenantModel{ID: modelID, ProviderID: "provider-mineru-1", InstanceID: "instance-mineru-1", ModelName: "MinerU-model", ModelType: int(entity.ModelTypeOCR), Status: "active"},
 	}
@@ -1766,11 +1766,11 @@ func TestResolveTenantOCRModelByProvider_MinerUProviderAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&entity.TenantModelProvider{}, &entity.TenantModelInstance{}, &entity.TenantModel{}); err != nil {
+	if err := db.AutoMigrate(&entity.UserTenant{}, &entity.TenantModelProvider{}, &entity.TenantModelInstance{}, &entity.TenantModel{}); err != nil {
 		t.Fatalf("migrate model tables: %v", err)
 	}
 	rows := []any{
-		&entity.TenantModelProvider{ID: "provider-minerunet-1", TenantID: "test-tenant", ProviderName: "MinerU.Net"},
+		&entity.TenantModelProvider{ID: "provider-minerunet-1", UserID: "test-tenant", TenantID: "test-tenant", ProviderName: "MinerU.Net"},
 		&entity.TenantModelInstance{ID: "instance-minerunet-1", ProviderID: "provider-minerunet-1", InstanceName: "default", APIKey: "mineru-secret", Status: "active", Extra: "{}"},
 		&entity.TenantModel{ID: "model-minerunet-1", ProviderID: "provider-minerunet-1", InstanceID: "instance-minerunet-1", ModelName: "MinerU-model", ModelType: int(entity.ModelTypeOCR), Status: "active"},
 	}
@@ -1818,6 +1818,10 @@ func TestDispatch_PDFDoclingMarkdown_UsesConfiguredBackend(t *testing.T) {
 			return
 		}
 		switch {
+		// The parser tries standard conversions first (they carry page
+		// provenance) and falls back to chunked endpoints only when the
+		// server rejects the standard shape, so the third request is the
+		// chunked /v1 call and answers with a chunk list.
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/convert/source" && requestCount == 1:
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			_, _ = w.Write([]byte(`{"detail":"chunking unsupported"}`))
@@ -1826,7 +1830,7 @@ func TestDispatch_PDFDoclingMarkdown_UsesConfiguredBackend(t *testing.T) {
 			_, _ = w.Write([]byte(`{"detail":"chunking unsupported"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/convert/source" && requestCount == 3:
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"document":{"md_content":"# Docling Title\n\nDocling body.\n"}}`))
+			_, _ = w.Write([]byte(`[{"text":"# Docling Title\n\nDocling body.\n"}]`))
 		default:
 			http.NotFound(w, r)
 		}
