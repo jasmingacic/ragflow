@@ -89,6 +89,7 @@ const svgIcons = [
   LLMFactory.MinerUNet,
   LLMFactory.PaddleOCR,
   LLMFactory.PaddleOCRLocal,
+  LLMFactory.MiniCPMOCR,
   LLMFactory.N1n,
   // LLMFactory.DeerAPI,
   LLMFactory.Avian,
@@ -122,12 +123,14 @@ const svgIcons = [
   LLMFactory.EmpirioLabs,
   LLMFactory.AIStupidLevel,
   LLMFactory.Runcrate,
+  LLMFactory.Nace,
   LLMFactory.WorldRouter,
   LLMFactory.CloudGPU,
   LLMFactory.Obscurify,
   LLMFactory.HostingerRouter,
   LLMFactory.Cheapaimodel,
   LLMFactory.Wally,
+  LLMFactory.Synap,
 ];
 
 export const LlmIcon = ({

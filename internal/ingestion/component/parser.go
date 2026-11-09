@@ -96,7 +96,8 @@ import (
 )
 
 // ComponentNameParser is the canonical Parser component name; the value lives
-// in the schema package so the pipeline layer can reference the same identity.
+// in common and is re-exported by the schema package so both layers reference
+// the same identity.
 const ComponentNameParser = schema.ComponentNameParser
 
 // pageFormFeed is the byte that text-page mode treats as a
@@ -300,17 +301,14 @@ func imageSetupRunsOCR(setup schema.ParserSetup) bool {
 func defaultSetups() map[string]schema.ParserSetup {
 	s := map[string]schema.ParserSetup{
 		"pdf": {
-			"parse_method":          "deepdoc",
-			"flatten_media_to_text": false,
-			"remove_toc":            false,
-			"remove_header_footer":  false,
-			"suffix":                []string{"pdf"},
+			"parse_method":         "deepdoc",
+			"remove_toc":           false,
+			"remove_header_footer": false,
+			"suffix":               []string{"pdf"},
 		},
 		"spreadsheet": {
-			"parse_method":          "deepdoc",
-			"flatten_media_to_text": false,
-			"html4excel":            false,
-			"suffix":                []string{"xls", "xlsx", "csv"},
+			"parse_method": "deepdoc",
+			"suffix":       []string{"xls", "xlsx", "csv"},
 		},
 		"doc": {
 			"remove_toc":           false,
@@ -318,15 +316,13 @@ func defaultSetups() map[string]schema.ParserSetup {
 			"suffix":               []string{"doc"},
 		},
 		"docx": {
-			"flatten_media_to_text": false,
-			"remove_toc":            false,
-			"remove_header_footer":  false,
-			"suffix":                []string{"docx"},
+			"remove_toc":           false,
+			"remove_header_footer": false,
+			"suffix":               []string{"docx"},
 		},
 		"markdown": {
-			"flatten_media_to_text": false,
-			"suffix":                []string{"md", "markdown", "mdx"},
-			"remove_toc":            false,
+			"suffix":     []string{"md", "markdown", "mdx"},
+			"remove_toc": false,
 		},
 		"text&code": {
 			"suffix": []string{
@@ -495,7 +491,13 @@ func (c *ParserComponent) Invoke(ctx context.Context, db *gorm.DB, inputs map[st
 	//     "docx", ...). Used by parser.GetParser, whose switch
 	//     arms are keyed off the utility constants.
 	//
-	fileTypeExt := fileTypeFromInputs(inputs)
+	requestedType := fileTypeFromInputs(inputs)
+	fileParser, fileTypeExt, selectionErr := parser.GetParser(requestedType, binary)
+	if selectionErr == nil && fileTypeExt != requestedType {
+		warning := fmt.Sprintf("file %q: requested format %s does not match detected format %s; continuing with the %s parser", filename, requestedType, fileTypeExt, fileTypeExt)
+		common.Warn(warning)
+		reportParserWarnings(ctx, []string{warning})
+	}
 	parsePagesOn := pdfPageProgressSupported(fileTypeExt, setups)
 	enhanceOn := c.enableVisionEnhancement
 	split := progress.NewSplit(parsePagesOn, enhanceOn)
@@ -519,7 +521,7 @@ func (c *ParserComponent) Invoke(ctx context.Context, db *gorm.DB, inputs map[st
 	var handledImage bool
 	if !handledVision && !handledMedia {
 		// Image dispatch: OCR with independently controlled VLM enhancement.
-		dispatched, handledImage, visionErr = maybeDispatchImage(ctx, db, fileTypeExt, filename, binary, inputs, setups, c.enableVisionEnhancement, c.vision)
+		dispatched, handledImage, visionErr = maybeDispatchImage(ctx, fileParser, db, fileTypeExt, filename, binary, inputs, setups, c.enableVisionEnhancement, c.vision)
 		if visionErr != nil {
 			return nil, visionErr
 		}
@@ -534,7 +536,10 @@ func (c *ParserComponent) Invoke(ctx context.Context, db *gorm.DB, inputs map[st
 		}
 	}
 	if !handledVision && !handledMedia && !handledImage && !handledAudio {
-		dispatched = dispatchParse(ctx, fileTypeExt, filename, binary, setups, pageWin)
+		if selectionErr != nil && fileTypeExt != utility.FileTypeOTHER {
+			return nil, fmt.Errorf("parser: resolve %q: %w", fileTypeExt, selectionErr)
+		}
+		dispatched = dispatchParse(ctx, fileParser, fileTypeExt, filename, binary, setups, pageWin)
 		if dispatched.Err == nil && ctx.Err() == nil {
 			pageWin.Report(ctx, 1.0)
 		}
